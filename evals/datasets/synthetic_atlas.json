@@ -1,0 +1,201 @@
+{
+  "jira": {
+    "projects": [
+      {
+        "key": "ATL",
+        "name": "Project Atlas",
+        "lead": "sarah.jenkins@company.com"
+      }
+    ],
+    "issues": [
+      {
+        "key": "ATL-101",
+        "project": "ATL",
+        "summary": "Fix OAuth2 token refresh race condition on auth-service",
+        "description": "During high concurrency, multiple simultaneous refresh calls cause token invalidation. This is the primary blocker for the authentication v2 release.",
+        "status": "In Progress",
+        "priority": "Highest",
+        "issue_type": "Bug",
+        "assignee": "marcus.vance@company.com",
+        "reporter": "sarah.jenkins@company.com",
+        "is_blocker": true,
+        "blocks": ["ATL-105"],
+        "created_at": "2026-09-05T09:00:00Z",
+        "updated_at": "2026-09-08T10:00:00Z",
+        "url": "https://company.atlassian.net/browse/ATL-101"
+      },
+      {
+        "key": "ATL-102",
+        "project": "ATL",
+        "summary": "Stripe webhooks idempotency failure on payments gateway",
+        "description": "Duplicate webhook delivery causes double billing state. Delayed the payments launch originally slated for Sept 10.",
+        "status": "Open",
+        "priority": "High",
+        "issue_type": "Bug",
+        "assignee": "priya.sharma@company.com",
+        "reporter": "alex.chen@company.com",
+        "is_blocker": true,
+        "blocks": ["ATL-105"],
+        "created_at": "2026-09-06T11:00:00Z",
+        "updated_at": "2026-09-07T14:30:00Z",
+        "url": "https://company.atlassian.net/browse/ATL-102"
+      },
+      {
+        "key": "ATL-103",
+        "project": "ATL",
+        "summary": "Update architecture runbook for multi-region failover",
+        "description": "Ensure runbook reflects active-active replication guidelines established in ADR-004.",
+        "status": "To Do",
+        "priority": "Medium",
+        "issue_type": "Task",
+        "assignee": "alex.chen@company.com",
+        "reporter": "sarah.jenkins@company.com",
+        "is_blocker": false,
+        "blocks": [],
+        "created_at": "2026-09-03T14:00:00Z",
+        "updated_at": "2026-09-05T09:15:00Z",
+        "url": "https://company.atlassian.net/browse/ATL-103"
+      },
+      {
+        "key": "ATL-104",
+        "project": "ATL",
+        "summary": "Audit unencrypted session tokens in Redis cache",
+        "description": "Action item from security sync: verify Redis session keys use AES-256 payload encryption.",
+        "status": "To Do",
+        "priority": "High",
+        "issue_type": "Task",
+        "assignee": "marcus.vance@company.com",
+        "reporter": "alex.chen@company.com",
+        "is_blocker": false,
+        "blocks": [],
+        "created_at": "2026-09-08T15:00:00Z",
+        "updated_at": "2026-09-08T16:20:00Z",
+        "url": "https://company.atlassian.net/browse/ATL-104"
+      },
+      {
+        "key": "ATL-105",
+        "project": "ATL",
+        "summary": "Final security review and release sign-off for Atlas GA",
+        "description": "Final gate for general availability. Currently blocked by unresolved authentication and payment bugs.",
+        "status": "Blocked",
+        "priority": "Highest",
+        "issue_type": "Epic",
+        "assignee": "sarah.jenkins@company.com",
+        "reporter": "sarah.jenkins@company.com",
+        "is_blocker": false,
+        "blocks": [],
+        "created_at": "2026-08-20T10:00:00Z",
+        "updated_at": "2026-09-09T08:00:00Z",
+        "url": "https://company.atlassian.net/browse/ATL-105"
+      }
+    ]
+  },
+  "notion": {
+    "pages": [
+      {
+        "id": "notion-atlas-spec",
+        "title": "Project Atlas: Q3 Architecture Specification & Release Scope",
+        "url": "https://notion.so/company/atlas-spec-92812",
+        "last_edited_time": "2026-09-01T12:00:00Z",
+        "author": "sarah.jenkins@company.com",
+        "content": "Project Atlas Target Release Date: September 10, 2026. Core Components: 1. Auth Service v2 with OAuth2 PKCE. 2. Payments Gateway integrating Stripe Connect. 3. Real-time Notification Engine. Scope Requirement: Zero high-severity security vulnerabilities allowed at launch. All services must have 99.95% uptime SLA."
+      },
+      {
+        "id": "notion-atlas-meeting-notes",
+        "title": "Sprint 24 Planning & Architecture Sync Notes",
+        "url": "https://notion.so/company/sprint-24-notes-47201",
+        "last_edited_time": "2026-09-06T17:00:00Z",
+        "author": "alex.chen@company.com",
+        "content": "Sprint 24 Goals: Stabilize Payments & Auth. Notes: Priya flagged duplicate webhook risk during Stripe load testing. Marcus reported token refresh race condition under 500 RPS load. Unresolved action item: Someone needs to create a Jira task for auditing Redis session encryption."
+      },
+      {
+        "id": "notion-adr-004",
+        "title": "ADR-004: JWT Session Storage and Refresh Strategy",
+        "url": "https://notion.so/company/adr-004-jwt-session-18492",
+        "last_edited_time": "2026-08-28T15:00:00Z",
+        "author": "marcus.vance@company.com",
+        "content": "Status: Accepted. Decision: Use rotating refresh tokens with 15-minute access token lifespan. Refresh tokens must be single-use and invalidation cascading. Storage: Redis cluster with active replication."
+      },
+      {
+        "id": "notion-payments-runbook",
+        "title": "Payments Service Runbook & Disaster Recovery",
+        "url": "https://notion.so/company/payments-runbook-63810",
+        "last_edited_time": "2026-08-20T11:00:00Z",
+        "author": "priya.sharma@company.com",
+        "content": "Runbook for Stripe gateway. Webhook endpoint requires HMAC SHA256 validation. In case of downtime, enable webhook buffering queue. Idempotency keys must be held for at least 24 hours in distributed cache."
+      }
+    ]
+  },
+  "gmail": {
+    "threads": [
+      {
+        "id": "gmail-th-01",
+        "subject": "Re: Payments launch delayed - Stripe webhook issues",
+        "snippet": "We encountered race condition and duplicate charge vulnerabilities in Stripe webhook handling. Postponing launch to Sept 18.",
+        "date": "2026-09-07T16:45:00Z",
+        "from": "priya.sharma@company.com",
+        "to": ["team-leads@company.com", "sarah.jenkins@company.com"],
+        "messages": [
+          {
+            "id": "msg-001",
+            "from": "priya.sharma@company.com",
+            "to": "team-leads@company.com",
+            "date": "2026-09-07T16:45:00Z",
+            "body": "Hi team, We have to delay the payments launch originally planned for Sept 10. During stress testing we caught a critical race condition in Stripe webhook idempotency that could double-bill users (see ATL-102). New target launch date is September 18. I commit to completing the idempotency fix and unit tests by Thursday Sept 10."
+          }
+        ]
+      },
+      {
+        "id": "gmail-th-02",
+        "subject": "Authentication release blockers & sprint sign-off",
+        "snippet": "ATL-101 is the sole blocker for the auth release. I will complete the token refresh fix by tomorrow evening.",
+        "date": "2026-09-08T11:30:00Z",
+        "from": "marcus.vance@company.com",
+        "to": ["alex.chen@company.com", "priya.sharma@company.com", "sarah.jenkins@company.com"],
+        "messages": [
+          {
+            "id": "msg-002",
+            "from": "marcus.vance@company.com",
+            "to": "sarah.jenkins@company.com",
+            "date": "2026-09-08T11:30:00Z",
+            "body": "Sarah, ATL-101 is the only active blocker for the authentication release. The race condition occurs when concurrent frontend tabs trigger refresh simultaneously. I have isolated the mutex lock issue and will submit the fix for review by Wednesday evening."
+          }
+        ]
+      },
+      {
+        "id": "gmail-th-03",
+        "subject": "Priya commitments this week (Sprint 24)",
+        "snippet": "This week I am committing to: 1) Stripe webhook idempotency patch (ATL-102), 2) Reviewing Marcus's token refresh PR...",
+        "date": "2026-09-08T09:00:00Z",
+        "from": "priya.sharma@company.com",
+        "to": ["sarah.jenkins@company.com"],
+        "messages": [
+          {
+            "id": "msg-003",
+            "from": "priya.sharma@company.com",
+            "to": "sarah.jenkins@company.com",
+            "date": "2026-09-08T09:00:00Z",
+            "body": "Hi Sarah, My commitments for this week: 1. Ship ATL-102 (Stripe webhook idempotency patch) with 100% test coverage. 2. Review Marcus's OAuth2 refresh PR for ATL-101. 3. Update payment gateway runbook on Notion."
+          }
+        ]
+      },
+      {
+        "id": "gmail-th-04",
+        "subject": "Decision on Redis token encryption (Never in Notion)",
+        "snippet": "We agreed to enforce AES-256 for Redis session caches immediately. Note: this decision has NOT been documented in Notion yet.",
+        "date": "2026-09-07T18:00:00Z",
+        "from": "alex.chen@company.com",
+        "to": ["security-group@company.com", "marcus.vance@company.com"],
+        "messages": [
+          {
+            "id": "msg-004",
+            "from": "alex.chen@company.com",
+            "to": "security-group@company.com",
+            "date": "2026-09-07T18:00:00Z",
+            "body": "Team, following today's security triage, we decided to enforce AES-256 encryption at rest for all Redis session caches. Note: this decision has NOT been documented in Notion yet. Marcus created ATL-104 to track implementation."
+          }
+        ]
+      }
+    ]
+  }
+}

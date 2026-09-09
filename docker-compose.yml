@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: context_mesh_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: context_mesh
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d context_mesh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: context_mesh_api
+    restart: unless-stopped
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgrespassword@postgres:5432/context_mesh
+      - CONNECTOR_MODE=mock
+      - ZAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
+      - ZAI_MODEL=glm-4-plus
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: context_mesh_web
+    restart: unless-stopped
+    command: streamlit run apps/web/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
