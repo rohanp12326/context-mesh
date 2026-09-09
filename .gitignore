@@ -57,7 +57,9 @@ cover/
 
 # Django stuff:
 *.log
+logs/
 local_settings.py
+
 db.sqlite3
 db.sqlite3-journal
 
@@ -214,5 +216,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Streamlit
 .streamlit/secrets.toml
+
+# ContextMesh Secure Vault
+.secrets/
+*.enc
+*.vault_key
