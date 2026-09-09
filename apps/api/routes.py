@@ -49,11 +49,14 @@ async def handle_chat(req: ChatRequest):
             query=req.query,
             user_id=req.user_id,
             thread_id=req.thread_id,
-            can_mutate=req.can_mutate
+            can_mutate=req.can_mutate,
+            force_demo=req.force_demo,
+            allow_auth_gate=req.allow_auth_gate
         )
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post("/approval")
@@ -149,8 +152,13 @@ async def test_integration(req: IntegrationTestRequest):
     elif req.service == "notion":
         ok, msg, lat = await test_notion_connection(api_key=creds.get("api_key", ""))
     elif req.service == "gmail":
-        ok, msg, lat = await test_gmail_connection(account_email=creds.get("account", ""))
+        ok, msg, lat = await test_gmail_connection(
+            account_email=creds.get("account", ""),
+            app_password=creds.get("app_password", ""),
+            access_token=creds.get("access_token", "")
+        )
     else:
+
         raise HTTPException(status_code=400, detail=f"Unknown service '{req.service}'")
 
     return {"service": req.service, "success": ok, "message": msg, "latency_ms": lat}

@@ -5,12 +5,19 @@ import os
 from typing import Any, Dict, List, Optional
 import httpx
 from connectors.base import BaseConnector, ConnectorItem, PermissionScope
-from security.vault import VAULT
-
-
+from security.vault import VAULT, is_valid_credential_value
 from observability.logging import get_logger
 
 logger = get_logger("connectors.notion")
+
+
+def _extract_rich_text(block: Dict[str, Any]) -> str:
+    """Extract readable text from a Notion block object."""
+    btype = block.get("type", "")
+    data = block.get(btype, {})
+    rich_text = data.get("rich_text", [])
+    text_parts = [t.get("plain_text", "") for t in rich_text if "plain_text" in t]
+    return "".join(text_parts).strip()
 
 
 class NotionConnector(BaseConnector):
@@ -31,7 +38,7 @@ class NotionConnector(BaseConnector):
     def mode(self) -> str:
         if self._explicit_mode:
             return self._explicit_mode
-        return VAULT.get_connector_mode()
+        return VAULT.get_service_mode("notion")
 
     @mode.setter
     def mode(self, value: str):
@@ -58,18 +65,42 @@ class NotionConnector(BaseConnector):
             return self._mock_data.get("notion", {}).get("pages", [])
         return []
 
+    async def _fetch_page_text(self, client: httpx.AsyncClient, page_id: str, headers: Dict[str, str]) -> str:
+        """Fetch block children of a Notion page and concatenate plain text."""
+        try:
+            resp = await client.get(
+                f"https://api.notion.com/v1/blocks/{page_id}/children",
+                params={"page_size": 25},
+                headers=headers,
+                timeout=8.0
+            )
+            if resp.status_code != 200:
+                return ""
+            blocks_data = resp.json()
+            lines = []
+            for blk in blocks_data.get("results", []):
+                txt = _extract_rich_text(blk)
+                if txt:
+                    lines.append(txt)
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     async def search(self, query: str, limit: int = 10, scope: Optional[PermissionScope] = None) -> List[ConnectorItem]:
         if scope and "read:notion" not in scope.allowed_scopes:
             raise PermissionError("Access denied: missing 'read:notion' scope")
 
-        is_configured = bool(self.api_key and self.api_key.strip())
+        is_configured = bool(
+            (self.api_key and is_valid_credential_value(self.api_key))
+            or VAULT.is_service_authenticated("notion")
+        )
         if self.mode == "mock" or not is_configured:
             if self.mode != "mock" and not is_configured:
                 logger.info("Notion live credentials not configured; falling back to synthetic dataset.")
             pages = self._load_mock_data()
             results = []
             q_lower = query.lower()
-            
+
             for page in pages:
                 haystack = f"{page.get('id', '')} {page.get('title', '')} {page.get('content', '')}".lower()
                 words = [w for w in q_lower.split() if len(w) > 2]
@@ -91,7 +122,7 @@ class NotionConnector(BaseConnector):
 
         # Live Notion API
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key.strip()}",
             "Notion-Version": "2022-06-28",
             "Content-Type": "application/json"
         }
@@ -100,7 +131,7 @@ class NotionConnector(BaseConnector):
                 "https://api.notion.com/v1/search",
                 json={"query": query, "page_size": limit},
                 headers=headers,
-                timeout=10.0
+                timeout=12.0
             )
             resp.raise_for_status()
             data = resp.json()
@@ -111,15 +142,25 @@ class NotionConnector(BaseConnector):
                 for prop in props.values():
                     if prop.get("id") == "title" and prop.get("title"):
                         title = prop["title"][0].get("plain_text", title)
+                    elif prop.get("type") == "title" and prop.get("title"):
+                        title = prop["title"][0].get("plain_text", title)
+
+                page_id = result["id"]
+                # Fetch text content from blocks
+                body_text = await self._fetch_page_text(client, page_id, headers)
+                if not body_text:
+                    body_text = f"Notion document: {title}"
+
                 items.append(
                     ConnectorItem(
                         source="notion",
-                        id=result["id"],
+                        id=page_id,
                         title=title,
-                        content=f"Notion page object: {result.get('url')}",
-                        url=result.get("url", ""),
+                        content=body_text,
+                        url=result.get("url", f"https://notion.so/{page_id.replace('-', '')}"),
                         updated_at=result.get("last_edited_time"),
-                        raw_payload=result
+                        raw_payload=result,
+                        metadata={"last_edited_time": result.get("last_edited_time")}
                     )
                 )
             return items
@@ -128,7 +169,10 @@ class NotionConnector(BaseConnector):
         if scope and "read:notion" not in scope.allowed_scopes:
             raise PermissionError("Access denied: missing 'read:notion' scope")
 
-        is_configured = bool(self.api_key and self.api_key.strip())
+        is_configured = bool(
+            (self.api_key and is_valid_credential_value(self.api_key))
+            or VAULT.is_service_authenticated("notion")
+        )
         if self.mode == "mock" or not is_configured:
             pages = self._load_mock_data()
             for page in pages:
@@ -146,24 +190,34 @@ class NotionConnector(BaseConnector):
             return None
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key.strip()}",
             "Notion-Version": "2022-06-28"
         }
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"https://api.notion.com/v1/pages/{item_id}", headers=headers, timeout=10.0)
+            resp = await client.get(f"https://api.notion.com/v1/pages/{item_id}", headers=headers, timeout=12.0)
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
             data = resp.json()
+            title = "Notion Page"
+            props = data.get("properties", {})
+            for prop in props.values():
+                if prop.get("id") == "title" and prop.get("title"):
+                    title = prop["title"][0].get("plain_text", title)
+                elif prop.get("type") == "title" and prop.get("title"):
+                    title = prop["title"][0].get("plain_text", title)
+
+            body_text = await self._fetch_page_text(client, item_id, headers)
             return ConnectorItem(
                 source="notion",
                 id=data["id"],
-                title="Notion Page",
-                content=f"Page url: {data.get('url')}",
-                url=data.get("url", ""),
+                title=title,
+                content=body_text if body_text else f"Notion page: {data.get('url')}",
+                url=data.get("url", f"https://notion.so/{item_id.replace('-', '')}"),
                 updated_at=data.get("last_edited_time"),
                 raw_payload=data
             )
 
     async def mutate(self, action: str, params: Dict[str, Any], scope: Optional[PermissionScope] = None) -> Dict[str, Any]:
         raise NotImplementedError("Mutating Notion pages is currently read-only in this version.")
+

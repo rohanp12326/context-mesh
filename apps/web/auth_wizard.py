@@ -238,26 +238,48 @@ def render_auth_wizard():
         st.markdown("### 📧 Gmail Configuration")
         st.info("Search email threads for stakeholder commitments, release announcements, and approvals.")
 
-        with st.expander("📖 Step-by-Step Guide: Google Workspace OAuth Setup", expanded=False):
+        with st.expander("📖 Step-by-Step Guide: Connect with Google App Password (Fastest)", expanded=False):
             st.markdown("""
-            1. Visit **Google Cloud Console**: [https://console.cloud.google.com/](https://console.cloud.google.com/)
-            2. Create a Project and enable the **Gmail API**.
-            3. Configure the OAuth Consent Screen and create OAuth 2.0 Client Credentials (`credentials.json`).
-            4. Alternatively for Google Workspace, configure App Passwords or place your credentials file in `secrets/gmail_credentials.json`.
+            1. Go to your Google Account security settings: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+               *(Requires 2-Step Verification enabled)*.
+            2. Enter an app name (e.g. `ContextMesh`) and click **Create**.
+            3. Copy the 16-character password displayed (e.g. `xxxx xxxx xxxx xxxx`).
+            4. Enter your Gmail address and the 16-character password below.
             """)
 
         gmail_creds = VAULT.get_credential("gmail")
-        gmail_account = st.text_input("Authorized Gmail Account", value=gmail_creds.get("account", ""), placeholder="you@company.com")
-        gmail_file = st.text_input("Path to credentials.json (optional)", value=gmail_creds.get("credentials_file", "secrets/gmail_credentials.json"))
+        gmail_auth_type = st.radio(
+            "Authentication Method",
+            ["Google App Password (Recommended)", "OAuth2 Access Token"],
+            horizontal=True,
+            key="wizard_gmail_auth_type"
+        )
 
-        if st.button("⚡ Save Gmail Configuration", key="btn_save_gmail"):
-            ok, msg, _ = asyncio.run(test_gmail_connection(gmail_account))
-            if ok:
-                VAULT.set_credential("gmail", {
-                    "account": gmail_account,
-                    "credentials_file": gmail_file
-                })
-                st.success("✅ Gmail configuration saved!")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
+        gmail_account = st.text_input("Gmail Address", value=gmail_creds.get("account", ""), placeholder="you@company.com", key="wizard_gmail_email")
+
+        if "App Password" in gmail_auth_type:
+            gmail_app_pw = st.text_input("16-character App Password", value=gmail_creds.get("app_password", ""), type="password", placeholder="xxxx xxxx xxxx xxxx", key="wizard_gmail_pw")
+            gmail_token = None
+        else:
+            gmail_token = st.text_input("OAuth2 Bearer Access Token", value=gmail_creds.get("access_token", ""), type="password", placeholder="ya29.a0...", key="wizard_gmail_token")
+            gmail_app_pw = None
+
+        if st.button("⚡ Test & Save Gmail Connection", key="btn_save_gmail"):
+            with st.spinner("Verifying live connection to Gmail..."):
+                ok, msg, _ = asyncio.run(test_gmail_connection(
+                    account_email=gmail_account,
+                    app_password=gmail_app_pw,
+                    access_token=gmail_token
+                ))
+                if ok:
+                    data = {"account": gmail_account}
+                    if gmail_app_pw:
+                        data["app_password"] = gmail_app_pw
+                    if gmail_token:
+                        data["access_token"] = gmail_token
+                    VAULT.set_credential("gmail", data)
+                    st.success(f"✅ {msg}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+

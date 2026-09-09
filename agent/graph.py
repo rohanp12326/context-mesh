@@ -42,10 +42,14 @@ class ContextMeshAgent:
         query: str,
         user_id: str = "default_user",
         thread_id: str = "default_thread",
-        can_mutate: bool = False
+        can_mutate: bool = False,
+        force_demo: bool = False,
+        allow_auth_gate: bool = False,
+        require_live: bool = False,
+        **kwargs
     ) -> AgentResponse:
         """Run the full agentic retrieval pipeline for a user query."""
-        logger.info(f"ContextMeshAgent.run() started: query='{query}', user='{user_id}', thread='{thread_id}', can_mutate={can_mutate}")
+        logger.info(f"ContextMeshAgent.run() started: query='{query}', user='{user_id}', thread='{thread_id}', can_mutate={can_mutate}, force_demo={force_demo}, allow_auth_gate={allow_auth_gate}")
         trace: RequestTrace = GLOBAL_TRACER.start_trace("agent_request", user_id=user_id, thread_id=thread_id)
         root_span = trace.root_span
 
@@ -64,7 +68,42 @@ class ContextMeshAgent:
         logger.info(f"Query plan generated: intent='{plan.user_intent}', steps={len(plan.steps)}, risk='{plan.risk_level}', requires_approval={plan.requires_approval}")
         plan_span.finish()
 
-        # 3. Check for Mutation Approval Gate
+        # Detect required services from plan steps
+        required_services = list(dict.fromkeys(
+            step.tool.split(".")[0] for step in plan.steps if "." in step.tool
+        ))
+
+        # 3. Check for Just-In-Time Authentication Gate
+        if (allow_auth_gate or require_live) and not force_demo:
+            from security.vault import VAULT
+            missing_services = VAULT.get_missing_services(required_services)
+            if missing_services:
+                logger.info(f"Query requires services {required_services}, but {missing_services} lack live authentication. Halting for JIT auth.")
+                GLOBAL_TRACER.finish_trace(trace.trace_id)
+                services_str = ", ".join(s.upper() for s in missing_services)
+                return AgentResponse(
+                    answer=(
+                        f"🔐 **Authentication Required**: This query needs data from **{services_str}**. "
+                        "Connect your account(s) below to fetch your real enterprise data, or proceed with demo data."
+                    ),
+                    citations=[],
+                    confidence=1.0,
+                    plan=plan,
+                    contradictions=[],
+                    trace_id=trace.trace_id,
+                    requires_approval=False,
+                    auth_required=True,
+                    missing_services=missing_services,
+                    required_services=required_services,
+                    auth_challenge={
+                        "query": query,
+                        "required_services": required_services,
+                        "missing_services": missing_services,
+                        "plan": plan.model_dump()
+                    }
+                )
+
+        # 4. Check for Mutation Approval Gate
         if plan.requires_approval and not can_mutate:
             logger.warning("Plan requires approval and can_mutate is False. Halting for human approval.")
             GLOBAL_TRACER.finish_trace(trace.trace_id)
@@ -85,8 +124,10 @@ class ContextMeshAgent:
                 contradictions=[],
                 trace_id=trace.trace_id,
                 requires_approval=True,
-                pending_mutation=pending_action
+                pending_mutation=pending_action,
+                required_services=required_services
             )
+
 
         # 4. Parallel Tool Execution Node (via MCP Registry)
         tools_span = GLOBAL_TRACER.add_span(root_span, "tool_execution", {"steps_count": len(plan.steps)})
@@ -106,8 +147,25 @@ class ContextMeshAgent:
                 )
             )
 
-        logger.info(f"Executing {len(tool_calls)} tool calls in parallel...")
-        results = await self.tool_registry.execute_parallel(tool_calls, scope=scope)
+        logger.info(f"Executing {len(tool_calls)} tool calls in parallel (force_demo={force_demo})...")
+        old_modes = {
+            "jira": getattr(self.tool_registry.jira.connector, "_explicit_mode", None),
+            "notion": getattr(self.tool_registry.notion.connector, "_explicit_mode", None),
+            "gmail": getattr(self.tool_registry.gmail.connector, "_explicit_mode", None),
+        }
+        if force_demo:
+            self.tool_registry.jira.connector.mode = "mock"
+            self.tool_registry.notion.connector.mode = "mock"
+            self.tool_registry.gmail.connector.mode = "mock"
+
+        try:
+            results = await self.tool_registry.execute_parallel(tool_calls, scope=scope)
+        finally:
+            if force_demo:
+                self.tool_registry.jira.connector.mode = old_modes["jira"]
+                self.tool_registry.notion.connector.mode = old_modes["notion"]
+                self.tool_registry.gmail.connector.mode = old_modes["gmail"]
+
         tools_span.finish()
 
         # 5. Extract raw items into ConnectorItems
@@ -146,8 +204,10 @@ class ContextMeshAgent:
             contradictions=contradictions,
             trace_id=trace.trace_id
         )
+        response.required_services = required_services
         gen_span.finish()
         logger.info(f"Synthesized response: {len(response.citations)} citations, confidence={response.confidence}")
+
 
         # 9. Candidate Memory Promotion Node
         mem_update_span = GLOBAL_TRACER.add_span(root_span, "memory_update")

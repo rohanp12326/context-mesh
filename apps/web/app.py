@@ -15,6 +15,11 @@ import streamlit as st
 from agent.graph import ContextMeshAgent
 from connectors.base import PermissionScope
 from security.vault import VAULT, mask_secret
+from security.connection_testers import (
+    test_jira_connection,
+    test_notion_connection,
+    test_gmail_connection
+)
 from apps.web.auth_wizard import render_auth_wizard
 from observability.logging import setup_logging, get_logger, read_latest_logs, get_log_file_path
 
@@ -28,18 +33,76 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize agent instance in session state
-if "agent" not in st.session_state:
-    st.session_state.agent = ContextMeshAgent()
+import inspect
+import security.vault
+import agent.state
+import agent.graph
+
+def reload_all_mesh_modules():
+    """Purge and cleanly re-import all context-mesh modules to eliminate split-brain classes."""
+    prefixes = (
+        "agent",
+        "connectors",
+        "security",
+        "retrieval",
+        "memory",
+        "observability",
+        "mcp_servers",
+        "apps.web.auth_wizard"
+    )
+    for mod in list(sys.modules.keys()):
+        if any(mod == p or mod.startswith(p + ".") for p in prefixes):
+            del sys.modules[mod]
+
+def _vault():
+    """Always return the current VAULT singleton from the security.vault module."""
+    import security.vault
+    return security.vault.VAULT
+
+def _agent_response_is_fresh() -> bool:
+    """Return True if the cached AgentResponse class has all required JIT auth fields."""
+    try:
+        import agent.state
+        fields = agent.state.AgentResponse.model_fields
+        return "auth_required" in fields and "missing_services" in fields
+    except Exception:
+        return False
+
+# Initialize or refresh agent instance in session state if method signature updated
+_needs_reload = (
+    "agent" not in st.session_state
+    or not hasattr(st.session_state.agent, "run")
+    or "allow_auth_gate" not in inspect.signature(st.session_state.agent.run).parameters
+    or not hasattr(_vault(), "get_missing_services")
+    or not _agent_response_is_fresh()
+)
+if _needs_reload:
+    reload_all_mesh_modules()
+    import security.vault
+    import agent.state
+    import agent.graph
+    st.session_state.agent = agent.graph.ContextMeshAgent()
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "pending_approval" not in st.session_state:
     st.session_state.pending_approval = None
+if "pending_auth" not in st.session_state:
+    st.session_state.pending_auth = None
 if "last_response" not in st.session_state:
     st.session_state.last_response = None
 
+
+def run_agent_async(**kwargs):
+    """Run agent safely filtering kwargs against the active agent signature."""
+    active_agent = st.session_state.agent
+    sig = inspect.signature(active_agent.run).parameters
+    call_kwargs = {k: v for k, v in kwargs.items() if k in sig}
+    return asyncio.run(active_agent.run(**call_kwargs))
+
+
 # Sidebar Configuration
-status_summary = VAULT.get_status()
+status_summary = _vault().get_status()
 current_mode = status_summary["mode"]
 services_status = status_summary["services"]
 
@@ -49,9 +112,11 @@ with st.sidebar:
 
     # Mode Badge
     if current_mode == "mock":
-        st.warning("🧪 **Mode: Demo Sandbox**\n*(Project Atlas synthetic data)*")
+        st.warning("🧪 **Global Mode: Demo Sandbox**\n*(Synthetic Project Atlas)*")
+    elif current_mode == "live":
+        st.success("🚀 **Global Mode: Live Enterprise**\n*(Querying live APIs)*")
     else:
-        st.success("🚀 **Mode: Live Enterprise**\n*(Querying live APIs)*")
+        st.info("⚡ **Global Mode: Smart Hybrid**\n*(Live where authenticated)*")
 
     st.markdown("---")
     st.markdown("### 🤖 Active LLM Engine")
@@ -63,16 +128,28 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🔌 Connected Systems")
-    st.markdown(f"{'✅' if services_status['jira']['is_configured'] else '⚪'} **Jira MCP**: {'Connected' if services_status['jira']['is_configured'] else 'Demo Data'}")
-    st.markdown(f"{'✅' if services_status['notion']['is_configured'] else '⚪'} **Notion MCP**: {'Connected' if services_status['notion']['is_configured'] else 'Demo Data'}")
-    st.markdown(f"{'✅' if services_status['gmail']['is_configured'] else '⚪'} **Gmail MCP**: {'Connected' if services_status['gmail']['is_configured'] else 'Demo Data'}")
+    for svc_name in ["jira", "notion", "gmail"]:
+        svc = services_status[svc_name]
+        is_conn = svc["is_configured"]
+        svc_mode = svc.get("mode", "mock")
+        icon = "🟢" if is_conn else "⚪"
+        mode_tag = "Live API" if (is_conn and svc_mode == "live") else "Demo Data"
+        st.markdown(f"{icon} **{svc_name.upper()}**: {mode_tag}")
 
     st.markdown("---")
     st.markdown("### 🛡️ Safety & Governance")
-    st.caption("• Human approval required for write mutations\n• Automatic PII & secret redaction\n• AES-128 credential encryption")
+    st.caption("• Just-In-Time app authentication\n• Human approval for write mutations\n• Automatic PII & secret redaction\n• AES-128 credential encryption")
+
+    st.markdown("---")
+    if st.button("🔄 Reload App Engine", help="Clears module cache and rebuilds agent cleanly", key="btn_reload_engine"):
+        reload_all_mesh_modules()
+        st.session_state.agent = None
+        st.session_state.pending_auth = None
+        st.session_state.pending_approval = None
+        st.rerun()
 
 st.title("🔍 ContextMesh — Cross-Tool Intelligence")
-st.caption("Decomposed query planning across Jira, Notion, and Gmail with tiered memory and evidence-backed citations.")
+st.caption("Decomposed query planning across Jira, Notion, and Gmail with live data retrieval, tiered memory, and evidence citations.")
 
 tab_chat, tab_auth, tab_memory, tab_trace, tab_logs = st.tabs([
     "💬 Intelligence Chat",
@@ -113,12 +190,173 @@ with tab_chat:
                         url = cit.get("source_url", "#") if isinstance(cit, dict) else getattr(cit, "source_url", "#")
                         st.markdown(f"- **[{source.upper()}]** [{claim}]({url})")
 
+    # Render Pending Authentication Challenge if active
+    if st.session_state.pending_auth:
+        challenge = st.session_state.pending_auth
+        missing_svcs = challenge.get("missing_services", [])
+        pending_q = challenge.get("query", "")
+
+        st.warning(
+            f"🔐 **Live App Authentication Required to Fetch Real Data**\n\n"
+            f"Your query involves **{', '.join(s.upper() for s in missing_svcs)}**. "
+            "To fetch your real organizational data instead of demo data, authenticate below:"
+        )
+
+        with st.container(border=True):
+            tabs_auth = st.tabs([f"Connect {s.upper()}" for s in missing_svcs])
+
+            for idx, svc in enumerate(missing_svcs):
+                with tabs_auth[idx]:
+                    if svc == "jira":
+                        st.markdown("#### 📌 Connect Atlassian Jira")
+                        j_url = st.text_input("Jira URL", placeholder="https://your-company.atlassian.net", key="jit_jira_url")
+                        j_email = st.text_input("User Email", placeholder="you@company.com", key="jit_jira_email")
+                        j_token = st.text_input("Atlassian API Token", type="password", placeholder="ATATT3xFfGF0...", key="jit_jira_token")
+                        if st.button("⚡ Test & Connect Jira", key="btn_jit_jira"):
+                            with st.spinner("Verifying Jira connection..."):
+                                ok, msg, _ = asyncio.run(test_jira_connection(j_url, j_email, j_token))
+                                if ok:
+                                    _vault().set_credential("jira", {"base_url": j_url, "user_email": j_email, "api_token": j_token})
+                                    st.success(f"✅ {msg}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+
+                    elif svc == "notion":
+                        st.markdown("#### 📓 Connect Notion Integration")
+                        n_token = st.text_input("Internal Integration Secret", type="password", placeholder="ntn_...", key="jit_notion_token")
+                        if st.button("⚡ Test & Connect Notion", key="btn_jit_notion"):
+                            with st.spinner("Verifying Notion connection..."):
+                                ok, msg, _ = asyncio.run(test_notion_connection(n_token))
+                                if ok:
+                                    _vault().set_credential("notion", {"api_key": n_token})
+                                    st.success(f"✅ {msg}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+
+                    elif svc == "gmail":
+                        st.markdown("#### 📧 Connect Gmail")
+                        gm_auth_mode = st.radio("Gmail Auth Method", ["Google App Password (16 chars)", "OAuth2 Bearer Token"], horizontal=True, key="jit_gm_mode")
+                        gm_email = st.text_input("Gmail Address", placeholder="you@company.com", key="jit_gm_email")
+                        if "App Password" in gm_auth_mode:
+                            gm_pw = st.text_input("16-character App Password", type="password", placeholder="xxxx xxxx xxxx xxxx", key="jit_gm_pw")
+                            gm_tok = None
+                        else:
+                            gm_tok = st.text_input("OAuth2 Access Token", type="password", placeholder="ya29.a0...", key="jit_gm_tok")
+                            gm_pw = None
+
+                        if st.button("⚡ Test & Connect Gmail", key="btn_jit_gmail"):
+                            with st.spinner("Verifying Gmail connection..."):
+                                ok, msg, _ = asyncio.run(test_gmail_connection(gm_email, gm_pw, gm_tok))
+                                if ok:
+                                    data = {"account": gm_email}
+                                    if gm_pw:
+                                        data["app_password"] = gm_pw
+                                    if gm_tok:
+                                        data["access_token"] = gm_tok
+                                    _vault().set_credential("gmail", data)
+                                    st.success(f"✅ {msg}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+
+            st.markdown("---")
+            col_act1, col_act2, col_act3 = st.columns([2, 2, 1])
+            with col_act1:
+                if st.button("🚀 Fetch Real Data Now", type="primary", key="btn_exec_live"):
+                    with st.spinner("Fetching live data from connected enterprise systems..."):
+                        response = run_agent_async(
+                            query=pending_q,
+                            thread_id="streamlit_session",
+                            can_mutate=False,
+                            allow_auth_gate=False
+                        )
+                        st.session_state.pending_auth = None
+                        st.session_state.last_response = response
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response.answer,
+                            "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
+                            "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations]
+                        })
+                        st.rerun()
+
+            with col_act2:
+                if st.button("🧪 Proceed with Demo Data", key="btn_exec_demo"):
+                    with st.spinner("Running query against synthetic Project Atlas demo data..."):
+                        response = run_agent_async(
+                            query=pending_q,
+                            thread_id="streamlit_session",
+                            can_mutate=False,
+                            force_demo=True,
+                            allow_auth_gate=False
+                        )
+                        st.session_state.pending_auth = None
+                        st.session_state.last_response = response
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response.answer,
+                            "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
+                            "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations]
+                        })
+                        st.rerun()
+
+            with col_act3:
+                if st.button("❌ Cancel", key="btn_cancel_auth"):
+                    st.session_state.pending_auth = None
+                    st.rerun()
+
+    # Render Pending Human Mutation Approval if active
+    if st.session_state.pending_approval:
+        mutation = st.session_state.pending_approval
+        with st.container(border=True):
+            st.error("🛑 **HUMAN APPROVAL REQUIRED BEFORE EXECUTION**")
+            st.markdown(
+                "A proposed write operation requires human confirmation in accordance with enterprise safety policies."
+            )
+            st.json(mutation)
+            col_app1, col_app2 = st.columns(2)
+            with col_app1:
+                if st.button("✅ Approve & Execute Jira Issue Creation", type="primary", key="btn_approve_mutation"):
+                    with st.spinner("Executing approved Jira mutation..."):
+                        scope = PermissionScope(allowed_scopes=["write:jira"], can_mutate=True)
+                        res = asyncio.run(st.session_state.agent.tool_registry.jira.connector.mutate(
+                            "create_issue", mutation.get("params", {}), scope=scope
+                        ))
+                        issue_key = res.get("issue_key", "UNKNOWN")
+                        succ_msg = f"✅ **Mutation Executed**: Jira issue **{issue_key}** created successfully! Status: {res.get('status', 'Open')}."
+                        st.success(succ_msg)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": succ_msg,
+                            "plan": None,
+                            "citations": []
+                        })
+                        st.session_state.pending_approval = None
+                        st.rerun()
+
+            with col_app2:
+                if st.button("❌ Reject Action", key="btn_reject_mutation"):
+                    rej_msg = "❌ **Action Rejected**: Proposed Jira mutation was canceled by the user."
+                    st.info(rej_msg)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": rej_msg,
+                        "plan": None,
+                        "citations": []
+                    })
+                    st.session_state.pending_approval = None
+                    st.rerun()
+
     # Chat input
     user_input = st.chat_input("Ask a cross-tool question across Jira, Notion, or Gmail...")
     if preset_query:
         user_input = preset_query
 
     if user_input:
+        st.session_state.pending_auth = None
+        st.session_state.pending_approval = None
         # Append user message
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
@@ -126,13 +364,20 @@ with tab_chat:
 
         # Run agent
         with st.chat_message("assistant"):
-            with st.spinner("Decomposing query, querying MCP servers, and resolving evidence..."):
-                response = asyncio.run(st.session_state.agent.run(
+            with st.spinner("Decomposing query and checking live application connections..."):
+                response = run_agent_async(
                     query=user_input,
                     thread_id="streamlit_session",
-                    can_mutate=False
-                ))
+                    can_mutate=False,
+                    allow_auth_gate=True
+                )
+
                 st.session_state.last_response = response
+
+                # If authentication is required for missing services, pause and trigger auth challenge
+                if response.auth_required:
+                    st.session_state.pending_auth = response.auth_challenge
+                    st.rerun()
 
                 # Display Decomposed Plan
                 if response.plan:
@@ -142,6 +387,17 @@ with tab_chat:
                         with cols[idx % len(cols)]:
                             tool_name = step.tool.split(".")[0].upper()
                             st.info(f"**Step {idx+1}**: {tool_name}\n*{step.purpose}*")
+
+                # Data Source Transparency Badge
+                live_svcs = [
+                    s for s in response.required_services
+                    if _vault().is_service_authenticated(s) and _vault().get_service_mode(s) == "live"
+                ]
+                demo_svcs = [s for s in response.required_services if s not in live_svcs]
+                if live_svcs:
+                    st.success(f"🟢 **Live Data Retrieved From**: {', '.join(s.upper() for s in live_svcs)}")
+                if demo_svcs:
+                    st.caption(f"🧪 **Demo Data Used For**: {', '.join(s.upper() for s in demo_svcs)}")
 
                 # Display Contradictions
                 if response.contradictions:
@@ -161,29 +417,19 @@ with tab_chat:
                         url = cit.get("source_url", "#") if isinstance(cit, dict) else getattr(cit, "source_url", "#")
                         st.markdown(f"- 📎 `[{source.upper()}]` [{claim}]({url})")
 
-                # Handle Approval Requirement
-                if response.requires_approval and response.pending_mutation:
-                    st.session_state.pending_approval = response.pending_mutation
-                    st.error("🛑 **HUMAN APPROVAL REQUIRED BEFORE EXECUTION**")
-                    st.json(response.pending_mutation)
-                    c_app, c_rej = st.columns(2)
-                    if c_app.button("✅ Approve Jira Issue Creation"):
-                        scope = PermissionScope(allowed_scopes=["write:jira"], can_mutate=True)
-                        res = asyncio.run(st.session_state.agent.tool_registry.jira.connector.mutate(
-                            "create_issue", response.pending_mutation.get("params", {}), scope=scope
-                        ))
-                        st.success(f"Mutation Executed! Issue created: {res.get('issue_key')}")
-                        st.session_state.pending_approval = None
-                    if c_rej.button("❌ Reject Action"):
-                        st.info("Action canceled.")
-                        st.session_state.pending_approval = None
-
+                # Append assistant response
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": response.answer,
-                    "plan": response.plan.model_dump() if response.plan else None,
-                    "citations": [c.model_dump() for c in response.citations]
+                    "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
+                    "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations]
                 })
+
+                # Handle Approval Requirement
+                if response.requires_approval and response.pending_mutation:
+                    st.session_state.pending_approval = response.pending_mutation
+                    st.rerun()
+
 
 with tab_memory:
     st.subheader("🧠 Durable Cross-Session Memory")

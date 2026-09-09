@@ -34,7 +34,7 @@ class JiraConnector(BaseConnector):
     def mode(self) -> str:
         if self._explicit_mode:
             return self._explicit_mode
-        return VAULT.get_connector_mode()
+        return VAULT.get_service_mode("jira")
 
     @mode.setter
     def mode(self, value: str):
@@ -79,7 +79,7 @@ class JiraConnector(BaseConnector):
         if scope and "read:jira" not in scope.allowed_scopes:
             raise PermissionError("Access denied: missing 'read:jira' scope")
 
-        is_configured = bool(self.base_url and self.user_email and self.api_token)
+        is_configured = VAULT.is_service_authenticated("jira")
         if self.mode == "mock" or not is_configured:
             if self.mode != "mock" and not is_configured:
                 logger.info("Jira live credentials not configured; falling back to synthetic dataset.")
@@ -171,7 +171,7 @@ class JiraConnector(BaseConnector):
         if scope and "read:jira" not in scope.allowed_scopes:
             raise PermissionError("Access denied: missing 'read:jira' scope")
 
-        is_configured = bool(self.base_url and self.user_email and self.api_token)
+        is_configured = VAULT.is_service_authenticated("jira")
         if self.mode == "mock" or not is_configured:
             issues = self._load_mock_data()
             for issue in issues:

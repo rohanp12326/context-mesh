@@ -31,6 +31,23 @@ async def test_chat_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_chat_endpoint_jit_auth_challenge():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        payload = {
+            "query": "What did Priya commit to completing this week?",
+            "user_id": "test_user",
+            "thread_id": "test_thread",
+            "allow_auth_gate": True
+        }
+        resp = await client.post("/api/v1/chat", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("auth_required") is True
+        assert len(data.get("missing_services", [])) > 0
+
+
+
+@pytest.mark.asyncio
 async def test_memory_endpoints():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # List memories
