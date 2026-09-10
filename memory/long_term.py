@@ -36,7 +36,8 @@ class LongTermMemoryStore:
             content={
                 "alias": "Atlas",
                 "jira_project": "ATL",
-                "notion_spec_id": "notion-atlas-spec",
+                "slack_channel": "proj-atlas-release",
+                "slack_canvas_id": "slack-atlas-spec",
                 "team_lead": "sarah.jenkins@company.com"
             },
             source={"kind": "user_confirmed", "reference": "seed"},

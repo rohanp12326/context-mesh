@@ -3,7 +3,7 @@
 Supports:
 - Google Workspace Gmail MCP: https://gmailmcp.googleapis.com/mcp/v1
 - Atlassian Rovo Jira MCP:    https://mcp.atlassian.com/v2/mcp
-- Notion Hosted MCP:          https://mcp.notion.com/mcp
+- Slack Hosted MCP:           https://mcp.slack.com/mcp
 """
 
 import asyncio
@@ -22,7 +22,7 @@ logger = get_logger("mcp.remote_client")
 OFFICIAL_MCP_ENDPOINTS = {
     "gmail": "https://gmailmcp.googleapis.com/mcp/v1",
     "jira": "https://mcp.atlassian.com/v2/mcp",
-    "notion": "https://mcp.notion.com/mcp",
+    "slack": "https://mcp.slack.com/mcp",
 }
 
 

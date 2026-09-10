@@ -20,7 +20,7 @@ from connectors.base import PermissionScope
 from security.vault import VAULT, mask_secret
 from security.connection_testers import (
     test_jira_connection,
-    test_notion_connection,
+    test_slack_connection,
     test_gmail_connection
 )
 from apps.web.auth_wizard import render_auth_wizard
@@ -132,7 +132,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🔌 Connected Systems")
-    for svc_name in ["jira", "notion", "gmail"]:
+    for svc_name in ["jira", "slack", "gmail"]:
         svc = services_status[svc_name]
         is_conn = svc["is_configured"]
         svc_mode = svc.get("mode", "mock")
@@ -153,7 +153,7 @@ with st.sidebar:
         st.rerun()
 
 st.title("🔍 ContextMesh — Cross-Tool Intelligence")
-st.caption("Decomposed query planning across Jira, Notion, and Gmail with live data retrieval, tiered memory, and evidence citations.")
+st.caption("Decomposed query planning across Jira, Slack, and Gmail with live data retrieval, tiered memory, and evidence citations.")
 
 tab_chat, tab_auth, tab_memory, tab_trace, tab_logs = st.tabs([
     "💬 Intelligence Chat",
@@ -175,9 +175,9 @@ with tab_chat:
     if col1.button("🔒 Auth Release Blockers"):
         preset_query = "What is blocking the authentication release, who owns each blocker, and what commitments were made in email?"
     if col2.button("⚡ Payments Delay Conflict"):
-        preset_query = "Why was the payments launch delayed and how does it conflict with the Notion specification?"
+        preset_query = "Why was the payments launch delayed and how does it conflict with the Slack release specification?"
     if col3.button("📝 Action Item to Jira Task"):
-        preset_query = "Create a proposed Jira task from the unresolved action item in Notion meeting notes."
+        preset_query = "Create a proposed Jira task from the unresolved action item in Slack discussion."
 
     # Display past conversation
     for msg in st.session_state.messages:
@@ -244,21 +244,22 @@ with tab_chat:
                                 else:
                                     st.error(f"❌ {msg}")
 
-                    elif svc == "notion":
-                        st.markdown("#### 📓 Connect Notion Integration")
-                        st.link_button("🔗 Open Notion Integrations Manager", "https://www.notion.so/my-integrations", use_container_width=True)
+                    elif svc == "slack":
+                        st.markdown("#### 💬 Connect Slack Integration")
+                        st.link_button("🔗 Open Slack API Apps Console", "https://api.slack.com/apps", use_container_width=True)
                         st.info(
-                            "**How to get your Notion Integration Secret (1 minute):**\n\n"
-                            "1. Click the button above to open Notion's integration portal.\n"
-                            "2. Click **+ New integration**, name it `ContextMesh`, select your workspace, and copy the **Internal Integration Secret** (`ntn_...`).\n"
-                            "3. **Crucial Step**: In your Notion app, open the page or spec you want ContextMesh to read, click `...` at top-right -> **Connect to** -> choose `ContextMesh`."
+                            "**How to get your Slack Token (1 minute):**\n\n"
+                            "1. Click the button above to open Slack's App console.\n"
+                            "2. Create or select your `ContextMesh` app in your workspace.\n"
+                            "3. Under **OAuth & Permissions**, copy your Bot User Token (`xoxb-...`) or User Token (`xoxp-...`)."
                         )
-                        n_token = st.text_input("Internal Integration Secret", type="password", placeholder="ntn_...", key="jit_notion_token")
-                        if st.button("⚡ Test & Connect Notion", key="btn_jit_notion"):
-                            with st.spinner("Verifying Notion connection..."):
-                                ok, msg, _ = asyncio.run(test_notion_connection(n_token))
+                        s_token = st.text_input("Slack Bot/User Token", type="password", placeholder="xoxb-... or xoxp-...", key="jit_slack_token")
+                        if st.button("⚡ Test & Connect Slack", key="btn_jit_slack"):
+                            with st.spinner("Verifying Slack connection..."):
+                                ok, msg, _ = asyncio.run(test_slack_connection(s_token))
                                 if ok:
-                                    _vault().set_credential("notion", {"api_key": n_token})
+                                    token_field = "user_token" if s_token.startswith("xoxp-") else "bot_token"
+                                    _vault().set_credential("slack", {token_field: s_token.strip()})
                                     st.success(f"✅ {msg}")
                                     st.rerun()
                                 else:
@@ -444,7 +445,7 @@ with tab_chat:
                     st.rerun()
 
     # Chat input
-    user_input = st.chat_input("Ask a cross-tool question across Jira, Notion, or Gmail...")
+    user_input = st.chat_input("Ask a cross-tool question across Jira, Slack, or Gmail...")
     if preset_query:
         user_input = preset_query
 

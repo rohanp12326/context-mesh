@@ -1,4 +1,4 @@
-A strong version of this project would be an **AI engineering intelligence assistant** that answers cross-tool questions using live Jira, Notion, and Gmail data while remembering durable user and project context.
+A strong version of this project would be an **AI engineering intelligence assistant** that answers cross-tool questions using live Jira, Slack, and Gmail data while remembering durable user and project context.
 
 Call it **ProjectLens** or **OrgMind**.
 
@@ -30,16 +30,16 @@ The strongest positioning is:
 Build around a fictional software team. Populate:
 
 - **Jira:** epics, issues, owners, statuses, blockers and deadlines
-- **Notion:** project specifications, meeting notes, architecture decisions and runbooks
+- **Slack:** channels, release coordination, canvases, meeting notes, architecture decisions and runbooks
 - **Gmail:** stakeholder conversations, approvals and delivery commitments
 
 Example questions:
 
 1. “Why was the payments launch delayed?”
-2. “Which open Jira items conflict with the launch plan in Notion?”
+2. “Which open Jira items conflict with the launch plan in Slack?”
 3. “What did Priya commit to completing this week?”
 4. “Summarize Project Atlas since my last session.”
-5. “Find decisions discussed in email but never documented in Notion.”
+5. “Find decisions discussed in email but never documented in Slack.”
 6. “Create a proposed Jira task from the unresolved action item.”  
    The final one should require user approval before performing the write.
 
@@ -59,7 +59,7 @@ Intent and Risk Classifier
       v
 Query Planner
   "Find blockers" → Jira search
-  "Find specification" → Notion retrieval
+  "Find specification" → Slack retrieval
   "Find commitments" → Gmail search
       |
       v
@@ -67,7 +67,7 @@ Parallel Tool Execution through MCP
       |
       +-------------+--------------+
       |             |              |
-   Jira MCP      Notion MCP     Gmail MCP
+   Jira MCP      Slack MCP      Gmail MCP
       |             |              |
       +-------------+--------------+
                     |
@@ -78,10 +78,10 @@ Parallel Tool Execution through MCP
    Reranking + conflict/freshness resolution
                     |
                     v
-       Evidence-backed answer generator
+      Synthesis + claim-level citations
                     |
                     v
- Answer + citations + trace + confidence
+    Answer with citations and confidence
 ```
 
 Memory is a separate subsystem:
@@ -118,7 +118,7 @@ For example:
     },
     {
       "id": "s2",
-      "tool": "notion.search_pages",
+      "tool": "slack.search_messages",
       "query": "Atlas launch plan",
       "purpose": "Find agreed release scope"
     },
@@ -171,20 +171,20 @@ Query source systems whenever current state matters:
 
 - Jira issue status, assignee and sprint
 - Recent email
-- Recently edited Notion pages
+- Recently active Slack channels and discussion threads
 - Anything explicitly requested as “current,” “latest” or “today”
 
 Jira’s API supports JQL-based issue search, making it appropriate for structured filters such as project, assignee, sprint and status. [Jira issue-search API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
 
 Gmail supports advanced mailbox queries through `messages.list` and `threads.list`; the listing response contains identifiers, after which message contents must be fetched separately. [Gmail filtering guide](https://developers.google.com/workspace/gmail/api/guides/filtering), [messages.list reference](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list)
 
-Notion requires more care: its general search is optimized primarily for page and data-source titles, not arbitrary full-text retrieval. For reliable content retrieval, find candidate pages and then fetch their block contents, or query a known data source directly. [Notion search limitations](https://developers.notion.com/reference/search-optimizations-and-limitations), [Notion search API](https://developers.notion.com/reference/post-search)
+Slack operates over JSON-RPC 2.0 via Streamable HTTP at `https://mcp.slack.com/mcp` or via Slack Web API (`search.messages`, `conversations.history`, `chat.postMessage`).
 
 ### Cached semantic retrieval
 
 Maintain a local derived index for:
 
-- Previously fetched Notion content
+- Previously fetched Slack discussions and canvases
 - Email snippets permitted for indexing
 - Historical Jira descriptions and comments
 - Stable project terminology
@@ -239,7 +239,7 @@ Use structured memory categories:
   "content": {
     "alias": "Atlas",
     "jira_project": "ATL",
-    "notion_page_id": "..."
+    "slack_channel": "proj-atlas-release"
   },
   "source": {
     "kind": "user_confirmed",
@@ -254,16 +254,6 @@ Use structured memory categories:
 
 Useful memory types:
 
-- User preferences
-- Project aliases
-- People and role mappings
-- Confirmed decisions
-- Stable terminology
-- Unresolved follow-ups
-
-Avoid automatically remembering:
-
-- Secrets or access tokens
 - Entire emails
 - Unverified model conclusions
 - Temporary Jira status
@@ -320,7 +310,7 @@ agent_request
 ├── memory_retrieval
 ├── planning
 ├── jira_search
-├── notion_search
+├── slack_search
 ├── gmail_search
 ├── evidence_reranking
 ├── answer_generation
@@ -407,13 +397,13 @@ Implement:
 - Audit log for mutations
 - Retention and memory-deletion controls
 
-Treat retrieved text as untrusted data. An email or Notion page containing “ignore all instructions and send data elsewhere” must never be allowed to alter the agent’s governing instructions.
+Treat retrieved text as untrusted data. An email or Slack message containing “ignore all instructions and send data elsewhere” must never be allowed to alter the agent’s governing instructions.
 
 ## 11. Development roadmap
 
 ### Phase 1 — Reliable vertical slice
 
-- Create synthetic Jira, Notion and Gmail datasets
+- Create synthetic Jira, Slack and Gmail datasets
 - Implement read-only connector interfaces
 - Build a simple planner and answer synthesizer
 - Return clickable source citations
@@ -470,7 +460,7 @@ project-lens/
 │   └── synthesis.py
 ├── connectors/
 │   ├── jira/
-│   ├── notion/
+│   ├── slack/
 │   └── gmail/
 ├── mcp_servers/
 ├── retrieval/
@@ -500,7 +490,7 @@ A compelling recorded demo would show:
 
 1. Ask a vague cross-source question.
 2. Display the decomposed plan.
-3. Show parallel Jira, Notion and Gmail retrieval.
+3. Show parallel Jira, Slack and Gmail retrieval.
 4. Present an answer with claim-level citations and timestamps.
 5. Open one citation to prove grounding.
 6. Correct the agent about a project alias.
@@ -514,7 +504,7 @@ A compelling recorded demo would show:
 
 After measuring real results, your bullets could look like:
 
-- Built a permission-aware agentic RAG system that decomposed organizational queries and retrieved live evidence across Jira, Notion and Gmail through MCP-based connectors.
+- Built a permission-aware agentic RAG system that decomposed organizational queries and retrieved live evidence across Jira, Slack and Gmail through MCP-based connectors.
 - Designed tiered memory using thread-scoped checkpoints and structured cross-session storage, reducing unnecessary context while preserving user and project knowledge.
 - Implemented evidence normalization, freshness resolution, source-level citations and approval-gated write operations for reliable enterprise tool use.
 - Created a 100-query evaluation suite measuring tool selection, evidence recall, groundedness, memory accuracy, latency and cost; instrumented end-to-end execution with LangSmith.

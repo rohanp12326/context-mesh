@@ -2,7 +2,7 @@
 
 ## 1. Security Principles
 
-Operating across sensitive enterprise data systems (emails, Jira boards, internal Notion wikis) introduces severe security and privacy challenges. ContextMesh enforces a defense-in-depth posture:
+Operating across sensitive enterprise data systems (emails, Jira boards, internal Slack channels) introduces severe security and privacy challenges. ContextMesh enforces a defense-in-depth posture:
 
 1. **Untrusted Data Isolation**: All retrieved content (emails, documents) is treated as untrusted data.
 2. **Strict Read/Write Gating**: LLMs are never permitted to unilaterally execute mutations without explicit human approval.

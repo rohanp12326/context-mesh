@@ -176,7 +176,7 @@ class ContextMeshAgent:
         tools_span = GLOBAL_TRACER.add_span(root_span, "tool_execution", {"steps_count": len(plan.steps)})
         scope = PermissionScope(
             user_id=user_id,
-            allowed_scopes=["read:jira", "read:notion", "read:gmail", "write:jira" if can_mutate else ""],
+            allowed_scopes=["read:jira", "read:slack", "read:gmail", "write:jira" if can_mutate else "", "write:slack" if can_mutate else ""],
             can_mutate=can_mutate
         )
 
@@ -193,12 +193,12 @@ class ContextMeshAgent:
         logger.info(f"Executing {len(tool_calls)} tool calls in parallel (force_demo={force_demo})...")
         old_modes = {
             "jira": getattr(self.tool_registry.jira.connector, "_explicit_mode", None),
-            "notion": getattr(self.tool_registry.notion.connector, "_explicit_mode", None),
+            "slack": getattr(self.tool_registry.slack.connector, "_explicit_mode", None),
             "gmail": getattr(self.tool_registry.gmail.connector, "_explicit_mode", None),
         }
         if force_demo:
             self.tool_registry.jira.connector.mode = "mock"
-            self.tool_registry.notion.connector.mode = "mock"
+            self.tool_registry.slack.connector.mode = "mock"
             self.tool_registry.gmail.connector.mode = "mock"
 
         try:
@@ -206,7 +206,7 @@ class ContextMeshAgent:
         finally:
             if force_demo:
                 self.tool_registry.jira.connector.mode = old_modes["jira"]
-                self.tool_registry.notion.connector.mode = old_modes["notion"]
+                self.tool_registry.slack.connector.mode = old_modes["slack"]
                 self.tool_registry.gmail.connector.mode = old_modes["gmail"]
 
         tools_span.finish()

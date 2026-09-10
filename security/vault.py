@@ -17,7 +17,10 @@ DATA_FILE = os.path.join(VAULT_DIR, "vault.enc")
 
 DUMMY_CREDENTIAL_PATTERNS = {
     "your_jira_api_token",
-    "secret_notion_api_token",
+    "xoxb-dummy-slack-token",
+    "xoxp-dummy-slack-token",
+    "your_slack_bot_token",
+    "your_slack_user_token",
     "your_zai_api_key_here",
     "you@company.com",
     "https://your-domain.atlassian.net",
@@ -149,10 +152,10 @@ class CredentialVault:
                 and is_valid_credential_value(email)
                 and is_valid_credential_value(token)
             )
-        elif service == "notion":
-            if is_valid_credential_value(creds.get("mcp_token") or os.getenv("NOTION_MCP_TOKEN", "")):
+        elif service == "slack":
+            if is_valid_credential_value(creds.get("mcp_token") or os.getenv("SLACK_MCP_TOKEN", "")):
                 return True
-            token = creds.get("api_key") or os.getenv("NOTION_API_KEY", "")
+            token = creds.get("bot_token") or creds.get("user_token") or creds.get("api_key") or os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_USER_TOKEN") or os.getenv("SLACK_TOKEN", "")
             return is_valid_credential_value(token)
         elif service == "gmail":
             if is_valid_credential_value(creds.get("mcp_token") or os.getenv("GMAIL_MCP_TOKEN", "")):
@@ -228,12 +231,12 @@ class CredentialVault:
 
         zai_data = store.get("zai", {})
         jira_data = store.get("jira", {})
-        notion_data = store.get("notion", {})
+        slack_data = store.get("slack", {})
         gmail_data = store.get("gmail", {})
 
         zai_key = zai_data.get("api_key") or os.getenv("ZAI_API_KEY", "")
         jira_token = jira_data.get("api_token") or os.getenv("JIRA_API_TOKEN", "")
-        notion_key = notion_data.get("api_key") or os.getenv("NOTION_API_KEY", "")
+        slack_token = slack_data.get("bot_token") or slack_data.get("user_token") or slack_data.get("api_key") or os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_USER_TOKEN") or os.getenv("SLACK_TOKEN", "")
 
         return {
             "mode": mode,
@@ -252,10 +255,10 @@ class CredentialVault:
                     "user_email": jira_data.get("user_email", os.getenv("JIRA_USER_EMAIL", "")),
                     "masked_token": mask_secret(jira_token),
                 },
-                "notion": {
-                    "is_configured": self.is_service_authenticated("notion"),
-                    "mode": self.get_service_mode("notion"),
-                    "masked_token": mask_secret(notion_key),
+                "slack": {
+                    "is_configured": self.is_service_authenticated("slack"),
+                    "mode": self.get_service_mode("slack"),
+                    "masked_token": mask_secret(slack_token),
                 },
                 "gmail": {
                     "is_configured": self.is_service_authenticated("gmail"),

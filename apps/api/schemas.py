@@ -30,7 +30,7 @@ class MemoryCreateRequest(BaseModel):
 
 
 class IntegrationConfigureRequest(BaseModel):
-    service: str  # zai | jira | notion | gmail
+    service: str  # zai | jira | slack | gmail
     credentials: Dict[str, Any]
 
 

@@ -82,8 +82,8 @@ def test_agent_response_coercion():
 
 
 @pytest.mark.asyncio
-async def test_agent_closed_tasks_jira_only_no_notion_auth():
-    """Verify that asking for closed tasks targets Jira only and never triggers Notion auth."""
+async def test_agent_closed_tasks_jira_only_no_slack_auth():
+    """Verify that asking for closed tasks targets Jira only and never triggers Slack auth."""
     agent = ContextMeshAgent()
     query = "what are my closed tasks"
 
@@ -91,7 +91,7 @@ async def test_agent_closed_tasks_jira_only_no_notion_auth():
     assert response is not None
     assert response.auth_required is False
     assert response.required_services == ["jira"]
-    assert "notion" not in response.required_services
+    assert "slack" not in response.required_services
     tools = [s.tool for s in response.plan.steps]
     assert tools == ["jira.search_issues"]
     assert len(response.citations) > 0
@@ -102,18 +102,18 @@ async def test_agent_closed_tasks_jira_only_no_notion_auth():
 async def test_agent_skip_unauthenticated_pruning(monkeypatch):
     """Verify skip_unauthenticated=True prunes unauthenticated services and proceeds with connected ones."""
     from security.vault import VAULT
-    # Jira is authenticated, Notion is not
+    # Jira is authenticated, Slack is not
     monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: svc == "jira")
 
     agent = ContextMeshAgent()
     query = "what are my opened tasks"
 
-    # With skip_unauthenticated=True, Notion is skipped, Jira runs
+    # With skip_unauthenticated=True, Slack is skipped, Jira runs
     response = await agent.run(query=query, thread_id="test_skip_auth_thread", allow_auth_gate=True, skip_unauthenticated=True)
     assert response is not None
     assert response.auth_required is False
     assert response.required_services == ["jira"]
-    assert response.skipped_services == ["notion"]
+    assert response.skipped_services == ["slack"]
     assert len(response.citations) > 0
 
 
@@ -131,6 +131,6 @@ async def test_agent_auth_challenge_contains_connected_services(monkeypatch):
     assert response.auth_required is True
     assert response.auth_challenge is not None
     assert "jira" in response.auth_challenge.get("connected_services", [])
-    assert "notion" in response.auth_challenge.get("missing_services", [])
+    assert "slack" in response.auth_challenge.get("missing_services", [])
 
 

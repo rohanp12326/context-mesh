@@ -3,8 +3,8 @@
 Classifies incoming user queries into:
 1. Zero-Tool Queries: General knowledge, technical how-tos, math, coding, chit-chat
    that do NOT require enterprise tool execution.
-2. App-Specific Queries: Intelligently routes to Gmail, Jira, Notion, or combinations
-   (e.g., 'recent mails' -> Gmail only; 'opened tasks' -> Jira + Notion).
+2. App-Specific Queries: Intelligently routes to Gmail, Jira, Slack, or combinations
+   (e.g., 'recent mails' -> Gmail only; 'opened tasks' -> Jira + Slack).
 """
 
 import re
@@ -41,9 +41,11 @@ JIRA_KEYWORDS = {
     "task", "tasks", "closed", "done", "resolved", "completed"
 }
 
-NOTION_KEYWORDS = {
-    "notion", "doc", "docs", "spec", "specs", "specification", "specifications",
-    "document", "documents", "wiki", "page", "pages", "runbook", "runbooks",
+SLACK_KEYWORDS = {
+    "slack", "channel", "channels", "thread", "threads", "chat", "message", "messages",
+    "canvas", "canvases", "huddle", "announcement", "announcements",
+    "doc", "docs", "spec", "specs", "specification", "specifications",
+    "document", "documents", "wiki", "runbook", "runbooks",
     "meeting notes", "minutes", "architecture", "guideline", "guidelines"
 }
 
@@ -72,7 +74,7 @@ class AppRouter:
         q = query.strip().lower()
 
         # If it explicitly mentions our known tools or project entities, it's not zero-tool
-        if any(w in q for w in ["jira", "notion", "gmail", "atlas", "atl-", "priya", "marcus"]):
+        if any(w in q for w in ["jira", "slack", "gmail", "atlas", "atl-", "priya", "marcus"]):
             return False
 
         # Common general queries
@@ -90,7 +92,7 @@ class AppRouter:
     def determine_apps(cls, query: str) -> List[str]:
         """Determine which enterprise apps should be queried.
         
-        Returns a list of app identifiers: e.g. ['gmail'], ['jira', 'notion'], etc.
+        Returns a list of app identifiers: e.g. ['gmail'], ['jira', 'slack'], etc.
         Returns empty list [] for zero-tool / general queries.
         """
         if cls.is_zero_tool_query(query):
@@ -104,10 +106,10 @@ class AppRouter:
             if re.search(ctp, q):
                 return ["jira"]
 
-        # Check for opened tasks / action items -> Jira + Notion
+        # Check for opened tasks / action items -> Jira + Slack
         for tp in TASK_PATTERNS:
             if re.search(tp, q):
-                return ["jira", "notion"]
+                return ["jira", "slack"]
 
         target_apps: Set[str] = set()
 
@@ -119,9 +121,9 @@ class AppRouter:
         if any(k in words for k in JIRA_KEYWORDS) or "jira" in q or "atl-" in q:
             target_apps.add("jira")
 
-        # Check Notion keywords
-        if any(k in words for k in NOTION_KEYWORDS) or "notion" in q or "runbook" in q:
-            target_apps.add("notion")
+        # Check Slack keywords
+        if any(k in words for k in SLACK_KEYWORDS) or "slack" in q or "runbook" in q or "canvas" in q:
+            target_apps.add("slack")
 
         # Entity-based routing:
         # Priya or Marcus commitments in email
@@ -131,24 +133,24 @@ class AppRouter:
         # Release status / delay / blocker queries (e.g. Project Atlas release or launch delay)
         if "release" in q or "block" in q or "delay" in q or "launch" in q:
             target_apps.add("jira")
-            if "notion" in q or "spec" in q or "plan" in q or "delay" in q:
-                target_apps.add("notion")
+            if "slack" in q or "spec" in q or "plan" in q or "delay" in q:
+                target_apps.add("slack")
             if "email" in q or "mail" in q or "commit" in q or "conflict" in q:
                 target_apps.add("gmail")
 
         # Decisions / meeting discussions
         if "decision" in q:
-            if "notion" in q or "documented" in q:
-                target_apps.add("notion")
+            if "slack" in q or "documented" in q:
+                target_apps.add("slack")
             if "email" in q or "mail" in q or "discussed" in q:
                 target_apps.add("gmail")
 
-        # If query specifically mentions Atlas without app keywords, default to Jira + Notion
+        # If query specifically mentions Atlas without app keywords, default to Jira + Slack
         if "atlas" in q and not target_apps:
-            target_apps.update(["jira", "notion"])
+            target_apps.update(["jira", "slack"])
 
         # If still empty and not a zero-tool query, fallback to searching all
         if not target_apps:
-            target_apps.update(["jira", "notion", "gmail"])
+            target_apps.update(["jira", "slack", "gmail"])
 
         return sorted(list(target_apps))

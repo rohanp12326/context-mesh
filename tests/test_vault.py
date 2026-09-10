@@ -8,7 +8,7 @@ from security.vault import CredentialVault, mask_secret
 from security.connection_testers import (
     verify_zai_connection,
     verify_jira_connection,
-    verify_notion_connection,
+    verify_slack_connection,
     verify_gmail_connection
 )
 
@@ -50,12 +50,12 @@ def test_vault_mode_and_status(temp_vault):
 
 
 def test_vault_deletion(temp_vault):
-    temp_vault.set_credential("notion", {"api_key": "ntn_test123"})
-    assert temp_vault.get_credential("notion").get("api_key") == "ntn_test123"
+    temp_vault.set_credential("slack", {"bot_token": "xoxb-test123"})
+    assert temp_vault.get_credential("slack").get("bot_token") == "xoxb-test123"
 
-    deleted = temp_vault.delete_credential("notion")
+    deleted = temp_vault.delete_credential("slack")
     assert deleted is True
-    assert temp_vault.get_credential("notion") == {}
+    assert temp_vault.get_credential("slack") == {}
 
 
 def test_mask_secret():
@@ -78,7 +78,7 @@ async def test_connection_testers_empty_inputs():
     assert ok is False
     assert "required" in msg.lower()
 
-    ok, msg, _ = await verify_notion_connection("")
+    ok, msg, _ = await verify_slack_connection("")
     assert ok is False
     assert "empty" in msg.lower()
 
@@ -122,16 +122,16 @@ def test_is_valid_credential_value():
     assert is_valid_credential_value("") is False
     assert is_valid_credential_value(None) is False
     assert is_valid_credential_value("your_jira_api_token") is False
-    assert is_valid_credential_value("secret_notion_api_token") is False
+    assert is_valid_credential_value("xoxb-dummy-slack-token") is False
     assert is_valid_credential_value("your_token_123") is False
     assert is_valid_credential_value("ATATT3xFfGF0realtoken") is True
-    assert is_valid_credential_value("ntn_real_notion_key") is True
+    assert is_valid_credential_value("xoxb-real-slack-token") is True
 
 
 def test_is_service_authenticated_and_modes(temp_vault):
     # Initially not authenticated
     assert temp_vault.is_service_authenticated("jira") is False
-    assert temp_vault.is_service_authenticated("notion") is False
+    assert temp_vault.is_service_authenticated("slack") is False
     assert temp_vault.is_service_authenticated("gmail") is False
 
     # Set Jira credentials
@@ -143,14 +143,14 @@ def test_is_service_authenticated_and_modes(temp_vault):
     assert temp_vault.is_service_authenticated("jira") is True
     assert temp_vault.get_service_mode("jira") == "live"
 
-    # Notion still unauthenticated -> fallback to mock
-    assert temp_vault.is_service_authenticated("notion") is False
-    assert temp_vault.get_service_mode("notion") == "mock"
+    # Slack still unauthenticated -> fallback to mock
+    assert temp_vault.is_service_authenticated("slack") is False
+    assert temp_vault.get_service_mode("slack") == "mock"
 
     # Missing services check
-    missing = temp_vault.get_missing_services(["jira", "notion", "gmail"])
+    missing = temp_vault.get_missing_services(["jira", "slack", "gmail"])
     assert "jira" not in missing
-    assert "notion" in missing
+    assert "slack" in missing
     assert "gmail" in missing
 
     # Set Gmail with app password

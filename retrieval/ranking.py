@@ -62,8 +62,8 @@ def check_sufficiency(query: str, evidence_list: List[Evidence]) -> Tuple[bool, 
         if "jira" not in sources_present:
             return False, "Query asks for blockers/tickets, but no Jira evidence was retrieved."
 
-    if "notion" in q_lower or "spec" in q_lower or "doc" in q_lower:
-        if "notion" not in sources_present:
-            return False, "Query asks for specifications/Notion, but no Notion evidence was retrieved."
+    if "slack" in q_lower or "spec" in q_lower or "doc" in q_lower:
+        if "slack" not in sources_present:
+            return False, "Query asks for specifications/Slack, but no Slack evidence was retrieved."
 
     return True, "Retrieved evidence appears sufficient."

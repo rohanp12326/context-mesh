@@ -26,7 +26,7 @@ logger = get_logger("apps.api")
 
 app = FastAPI(
     title="ContextMesh API",
-    description="Permission-aware Agentic Retrieval System for Enterprise Intelligence across Jira, Notion, and Gmail.",
+    description="Permission-aware Agentic Retrieval System for Enterprise Intelligence across Jira, Slack, and Gmail.",
     version="0.1.0"
 )
 

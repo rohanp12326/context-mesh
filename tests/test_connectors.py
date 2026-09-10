@@ -1,4 +1,4 @@
-"""Unit tests for Jira, Notion, and Gmail connectors."""
+"""Unit tests for Jira, Slack, and Gmail connectors."""
 
 import pytest
 from connectors.base import PermissionScope
@@ -21,10 +21,10 @@ async def test_jira_get_by_id(jira_connector):
 
 
 @pytest.mark.asyncio
-async def test_notion_mock_search(notion_connector):
-    items = await notion_connector.search("Atlas launch plan", limit=5)
+async def test_slack_mock_search(slack_connector):
+    items = await slack_connector.search("Atlas launch plan", limit=5)
     assert len(items) > 0
-    assert any("atlas-spec" in item.id for item in items)
+    assert any("slack-atlas-spec" in item.id for item in items)
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_gmail_mock_search(gmail_connector):
 
 @pytest.mark.asyncio
 async def test_connector_permissions(jira_connector):
-    scope = PermissionScope(allowed_scopes=["read:notion"])  # Missing read:jira
+    scope = PermissionScope(allowed_scopes=["read:slack"])  # Missing read:jira
     with pytest.raises(PermissionError):
         await jira_connector.search("Atlas", scope=scope)
 
@@ -89,11 +89,11 @@ async def test_gmail_live_rest_search(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notion_live_search_with_blocks(monkeypatch):
+async def test_slack_live_search(monkeypatch):
     import httpx
-    from connectors.notion.connector import NotionConnector
+    from connectors.slack.connector import SlackConnector
 
-    conn = NotionConnector(mode="live", api_key="ntn_live_test_key")
+    conn = SlackConnector(mode="live", bot_token="xoxb-test-token")
 
     class MockAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -105,48 +105,32 @@ async def test_notion_live_search_with_blocks(monkeypatch):
         async def __aexit__(self, *args):
             pass
 
-        async def post(self, url, *args, **kwargs):
+        async def get(self, url, *args, **kwargs):
             class MockResp:
                 status_code = 200
                 def raise_for_status(self):
                     pass
                 def json(self):
                     return {
-                        "results": [
-                            {
-                                "id": "page-123",
-                                "url": "https://notion.so/page-123",
-                                "last_edited_time": "2026-09-09T10:00:00Z",
-                                "properties": {
-                                    "title": {
-                                        "id": "title",
-                                        "title": [{"plain_text": "Live Architecture Spec"}]
-                                    }
+                        "ok": True,
+                        "messages": {
+                            "matches": [
+                                {
+                                    "iid": "msg-999",
+                                    "text": "Detailed architecture guidelines for Atlas in Slack.",
+                                    "username": "sarah",
+                                    "ts": "1710000000.000",
+                                    "channel": {"id": "C123", "name": "proj-atlas-release"},
+                                    "permalink": "https://slack.com/archives/C123/p1710000000"
                                 }
-                            }
-                        ]
-                    }
-            return MockResp()
-
-        async def get(self, url, *args, **kwargs):
-            class MockResp:
-                status_code = 200
-                def json(self):
-                    return {
-                        "results": [
-                            {
-                                "type": "paragraph",
-                                "paragraph": {
-                                    "rich_text": [{"plain_text": "Detailed architecture guidelines for Atlas."}]
-                                }
-                            }
-                        ]
+                            ]
+                        }
                     }
             return MockResp()
 
     monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
     items = await conn.search("architecture", limit=1)
     assert len(items) == 1
-    assert items[0].title == "Live Architecture Spec"
+    assert items[0].id == "slack-msg-1710000000.000"
     assert "Detailed architecture guidelines" in items[0].content
 

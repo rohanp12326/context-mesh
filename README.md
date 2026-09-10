@@ -14,7 +14,7 @@
 
 Modern software organizations fragment critical context across heterogeneous systems:
 - **Jira**: Epics, issues, owners, blockers, and sprint deadlines.
-- **Notion**: Architecture specs, launch plans, meeting notes, and runbooks.
+- **Slack**: Real-time channels, release coordination, canvases, and discussion threads.
 - **Gmail**: Stakeholder commitments, sign-offs, and delayed release announcements.
 
 Standard RAG architectures fail on cross-tool questions like:
@@ -22,8 +22,8 @@ Standard RAG architectures fail on cross-tool questions like:
 
 **ContextMesh** solves this problem by treating cross-tool retrieval as an **agentic decomposition and synthesis problem**:
 1. **Typed Query Planning**: Decomposes complex inquiries into parallelizable retrieval steps.
-2. **Standardized MCP Tool Execution**: Queries Jira, Notion, and Gmail concurrently through Model Context Protocol servers.
-3. **Evidence Normalization & Freshness**: Computes SHA-256 integrity hashes, evaluates timestamp freshness, and detects contradictions across systems (e.g. stale Notion specs vs recent Gmail delay announcements).
+2. **Standardized MCP Tool Execution**: Queries Jira, Slack, and Gmail concurrently through Model Context Protocol servers.
+3. **Evidence Normalization & Freshness**: Computes SHA-256 integrity hashes, evaluates timestamp freshness, and detects contradictions across systems (e.g. stale Slack release specs vs recent Gmail delay announcements).
 4. **Tiered Memory Architecture**: Combines thread-scoped working state checkpoints with durable, structured long-term memory (project aliases, roles, confirmed decisions) governed by strict promotion & superseding policies.
 5. **Human-in-the-Loop Mutation Gating**: Enforces approval gates before mutating tools (e.g. creating Jira tickets) can execute.
 6. **Quantitative Evaluation Suite**: End-to-end benchmark measuring tool accuracy, groundedness, citation precision, and permission compliance.
@@ -49,7 +49,7 @@ User / Streamlit UI / API
           ▼
  Parallel MCP Tool Execution (asyncio.gather)
     ├── Jira MCP Server     (JQL search, issue details, create issue)
-    ├── Notion MCP Server   (Page search, block content extraction)
+    ├── Slack MCP Server    (Message search, thread context, channel discussion)
     └── Gmail MCP Server    (Thread search, message content)
           │
           ▼
@@ -171,12 +171,12 @@ context-mesh/
 ├── connectors/               # Dual-mode enterprise connectors (Mock + Live)
 │   ├── base.py
 │   ├── jira/connector.py
-│   ├── notion/connector.py
+│   ├── slack/connector.py
 │   └── gmail/connector.py
 ├── mcp_servers/              # Model Context Protocol servers
 │   ├── base.py
 │   ├── jira_server.py
-│   ├── notion_server.py
+│   ├── slack_server.py
 │   ├── gmail_server.py
 │   └── registry.py           # Parallel dispatch manager
 ├── retrieval/                # Evidence pipeline
@@ -215,7 +215,7 @@ context-mesh/
 
 ## 💼 Resume Positioning
 
-- *Built a permission-aware agentic RAG system that decomposed cross-system queries and retrieved live evidence across Jira, Notion, and Gmail through Model Context Protocol (MCP) servers.*
+- *Built a permission-aware agentic RAG system that decomposed cross-system queries and retrieved live evidence across Jira, Slack, and Gmail through Model Context Protocol (MCP) servers.*
 - *Designed a tiered memory architecture utilizing thread-scoped working state checkpoints and structured long-term storage with superseding policies, reducing token waste while retaining cross-session project aliases.*
 - *Engineered evidence normalization, SHA-256 integrity hashing, freshness detection, and human approval gates for write mutations.*
 - *Created an automated quantitative evaluation benchmark measuring tool selection accuracy (95.2%), groundedness (92.8%), and permission compliance (100%), integrated with ZAI GLM and Streamlit.*

@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 from agent.state import QueryPlan, PlanStep
 
 
-# Injection patterns found in untrusted emails / Notion documents
+# Injection patterns found in untrusted emails / Slack messages
 INJECTION_PATTERNS = [
     r"ignore\s+(all\s+)?(previous\s+)?instructions",
     r"disregard\s+(all\s+)?prior",
@@ -47,7 +47,7 @@ class PolicyEngine:
 
         # Check query keywords
         q_lower = query.lower()
-        if any(w in q_lower for w in ["create issue", "create task", "delete", "post email", "send email"]):
+        if any(w in q_lower for w in ["create issue", "create task", "delete", "post email", "send email", "post message", "send message"]):
             requires_approval = True
             risk_level = "high"
             reasons.append("Query requests a modifying action.")

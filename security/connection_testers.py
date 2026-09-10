@@ -121,33 +121,39 @@ async def verify_jira_connection(
         return False, f"Could not reach Jira instance: {str(e)}", 0.0
 
 
-async def verify_notion_connection(api_key: str) -> Tuple[bool, str, float]:
-    """Test Notion connectivity by querying the bot user profile (/v1/users/me)."""
-    if not api_key or not api_key.strip():
-        return False, "Notion API Key cannot be empty.", 0.0
+async def verify_slack_connection(token: str) -> Tuple[bool, str, float]:
+    """Test Slack connectivity by querying the auth.test endpoint."""
+    clean_token = (token or "").strip()
+    if not clean_token:
+        return False, "Slack token cannot be empty.", 0.0
 
-    url = "https://api.notion.com/v1/users/me"
+    url = "https://slack.com/api/auth.test"
     headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
-        "Notion-Version": "2022-06-28"
+        "Authorization": f"Bearer {clean_token}",
+        "Content-Type": "application/json; charset=utf-8"
     }
 
     start = time.time()
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.post(url, headers=headers)
             latency = round((time.time() - start) * 1000.0, 2)
 
             if resp.status_code == 200:
-                bot_info = resp.json()
-                bot_name = bot_info.get("name", "Notion Bot")
-                return True, f"Connected to Notion! Bot Name: '{bot_name}' ({latency}ms)", latency
+                data = resp.json()
+                if data.get("ok"):
+                    team = data.get("team", "Slack Workspace")
+                    user = data.get("user", "Slack App")
+                    return True, f"Connected to Slack! Workspace: '{team}', User/Bot: '{user}' ({latency}ms)", latency
+                else:
+                    err = data.get("error", "authentication_failed")
+                    return False, f"Slack auth test failed: {err}", latency
             elif resp.status_code == 401:
-                return False, "Authentication failed (401): Invalid Notion integration token.", latency
+                return False, "Authentication failed (401): Invalid Slack token.", latency
             else:
-                return False, f"Notion error {resp.status_code}: {resp.text[:120]}", latency
+                return False, f"Slack API error {resp.status_code}: {resp.text[:120]}", latency
     except Exception as e:
-        return False, f"Could not connect to Notion API: {str(e)}", 0.0
+        return False, f"Could not connect to Slack API: {str(e)}", 0.0
 
 
 async def verify_gmail_connection(
@@ -250,7 +256,7 @@ async def verify_mcp_connection(
 # Aliases
 test_zai_connection = verify_zai_connection
 test_jira_connection = verify_jira_connection
-test_notion_connection = verify_notion_connection
+test_slack_connection = verify_slack_connection
 test_gmail_connection = verify_gmail_connection
 test_mcp_connection = verify_mcp_connection
 
