@@ -116,3 +116,51 @@ async def test_verify_zai_connection_error_1211(monkeypatch):
     assert "1211" in msg
     assert "glm-4.5-air" in msg
 
+
+def test_is_valid_credential_value():
+    from security.vault import is_valid_credential_value
+    assert is_valid_credential_value("") is False
+    assert is_valid_credential_value(None) is False
+    assert is_valid_credential_value("your_jira_api_token") is False
+    assert is_valid_credential_value("secret_notion_api_token") is False
+    assert is_valid_credential_value("your_token_123") is False
+    assert is_valid_credential_value("ATATT3xFfGF0realtoken") is True
+    assert is_valid_credential_value("ntn_real_notion_key") is True
+
+
+def test_is_service_authenticated_and_modes(temp_vault):
+    # Initially not authenticated
+    assert temp_vault.is_service_authenticated("jira") is False
+    assert temp_vault.is_service_authenticated("notion") is False
+    assert temp_vault.is_service_authenticated("gmail") is False
+
+    # Set Jira credentials
+    temp_vault.set_credential("jira", {
+        "base_url": "https://company.atlassian.net",
+        "user_email": "engineer@company.com",
+        "api_token": "ATATT3xFfGF0realtoken"
+    })
+    assert temp_vault.is_service_authenticated("jira") is True
+    assert temp_vault.get_service_mode("jira") == "live"
+
+    # Notion still unauthenticated -> fallback to mock
+    assert temp_vault.is_service_authenticated("notion") is False
+    assert temp_vault.get_service_mode("notion") == "mock"
+
+    # Missing services check
+    missing = temp_vault.get_missing_services(["jira", "notion", "gmail"])
+    assert "jira" not in missing
+    assert "notion" in missing
+    assert "gmail" in missing
+
+    # Set Gmail with app password
+    temp_vault.set_credential("gmail", {
+        "account": "user@gmail.com",
+        "app_password": "abcd efgh ijkl mnop"
+    })
+    assert temp_vault.is_service_authenticated("gmail") is True
+    assert temp_vault.get_service_mode("gmail") == "live"
+    missing2 = temp_vault.get_missing_services(["jira", "gmail"])
+    assert len(missing2) == 0
+
+

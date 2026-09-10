@@ -12,6 +12,9 @@ class ChatRequest(BaseModel):
     user_id: str = "default_user"
     thread_id: str = "default_thread"
     can_mutate: bool = False
+    force_demo: bool = False
+    allow_auth_gate: bool = False
+
 
 
 class ApprovalRequest(BaseModel):

@@ -109,6 +109,20 @@ pytest tests/ -v
 streamlit run apps/web/app.py
 ```
 
+### Option 3: Connect via Model Context Protocol (MCP) Client
+
+ContextMesh exposes a native MCP server for **Claude Desktop**, **Cursor IDE**, **Continue**, and **Windsurf**:
+
+```bash
+# Run stdio MCP server directly:
+python -m mcp_servers.server
+
+# Or inspect interactively with MCP Inspector:
+npx @modelcontextprotocol/inspector python -m mcp_servers.server
+```
+
+See the complete setup guide in [docs/mcp-client-setup.md](docs/mcp-client-setup.md) for copy-paste `claude_desktop_config.json` and `.cursor/mcp.json` snippets.
+
 ---
 
 ## 🧪 Evaluation Benchmark & Results

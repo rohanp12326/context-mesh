@@ -1,7 +1,7 @@
 """Typed agent state and plan definitions."""
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from retrieval.normalization import Evidence
 from retrieval.freshness import Contradiction
 
@@ -16,11 +16,25 @@ class PlanStep(BaseModel):
 
 
 class QueryPlan(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     user_intent: str
     entities: Dict[str, str] = Field(default_factory=dict)
     steps: List[PlanStep] = Field(default_factory=list)
     risk_level: str = "low"  # low | medium | high
     requires_approval: bool = False
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def coerce_steps(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            res = []
+            for item in v:
+                if hasattr(item, "model_dump") and not isinstance(item, PlanStep):
+                    res.append(item.model_dump())
+                else:
+                    res.append(item)
+            return res
+        return v
 
 
 class Citation(BaseModel):
@@ -33,6 +47,7 @@ class Citation(BaseModel):
 
 
 class AgentResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     answer: str
     citations: List[Citation] = Field(default_factory=list)
     confidence: float = 0.95
@@ -41,6 +56,48 @@ class AgentResponse(BaseModel):
     trace_id: Optional[str] = None
     requires_approval: bool = False
     pending_mutation: Optional[Dict[str, Any]] = None
+    auth_required: bool = False
+    missing_services: List[str] = Field(default_factory=list)
+    required_services: List[str] = Field(default_factory=list)
+    skipped_services: List[str] = Field(default_factory=list)
+    auth_challenge: Optional[Dict[str, Any]] = None
+
+    @field_validator("plan", mode="before")
+    @classmethod
+    def coerce_plan(cls, v: Any) -> Any:
+        if v is not None and not isinstance(v, (dict, QueryPlan)):
+            if hasattr(v, "model_dump"):
+                return v.model_dump()
+            if hasattr(v, "__dict__"):
+                return v.__dict__
+        return v
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def coerce_citations(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            res = []
+            for item in v:
+                if hasattr(item, "model_dump") and not isinstance(item, Citation):
+                    res.append(item.model_dump())
+                else:
+                    res.append(item)
+            return res
+        return v
+
+    @field_validator("contradictions", mode="before")
+    @classmethod
+    def coerce_contradictions(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            res = []
+            for item in v:
+                if hasattr(item, "model_dump") and not isinstance(item, Contradiction):
+                    res.append(item.model_dump())
+                else:
+                    res.append(item)
+            return res
+        return v
+
 
 
 class AgentState(BaseModel):

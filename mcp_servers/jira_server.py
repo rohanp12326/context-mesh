@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional
 from connectors.jira.connector import JiraConnector
 from connectors.base import PermissionScope
-from mcp_servers.base import MCPToolDefinition, MCPToolParameter, MCPToolResult
+from mcp_servers.base import MCPToolDefinition, MCPToolResult
 
 
 class JiraMCPServer:
@@ -17,31 +17,43 @@ class JiraMCPServer:
             MCPToolDefinition(
                 name="jira.search_issues",
                 description="Search Jira issues using JQL syntax or keywords (e.g. project, assignee, blockers).",
-                parameters=[
-                    MCPToolParameter(name="query", type="string", description="JQL query or search terms", required=True),
-                    MCPToolParameter(name="limit", type="integer", description="Maximum number of issues", required=False, default=10)
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "JQL query or search terms"},
+                        "limit": {"type": "integer", "description": "Maximum number of issues", "default": 10}
+                    },
+                    "required": ["query"]
+                },
                 is_mutation=False,
                 requires_approval=False
             ),
             MCPToolDefinition(
                 name="jira.get_issue",
                 description="Get detailed information for a specific Jira issue by issue key (e.g. ATL-101).",
-                parameters=[
-                    MCPToolParameter(name="issue_key", type="string", description="Jira issue key", required=True)
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "issue_key": {"type": "string", "description": "Jira issue key"}
+                    },
+                    "required": ["issue_key"]
+                },
                 is_mutation=False,
                 requires_approval=False
             ),
             MCPToolDefinition(
                 name="jira.create_issue",
                 description="Create a new Jira issue/task. MUTATION OPERATION: requires explicit human approval.",
-                parameters=[
-                    MCPToolParameter(name="project", type="string", description="Project key (e.g. ATL)", required=True),
-                    MCPToolParameter(name="summary", type="string", description="Issue title/summary", required=True),
-                    MCPToolParameter(name="description", type="string", description="Issue description details", required=False, default=""),
-                    MCPToolParameter(name="priority", type="string", description="Issue priority", required=False, default="Medium"),
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string", "description": "Project key (e.g. ATL)"},
+                        "summary": {"type": "string", "description": "Issue title/summary"},
+                        "description": {"type": "string", "description": "Issue description details", "default": ""},
+                        "priority": {"type": "string", "description": "Issue priority", "default": "Medium"}
+                    },
+                    "required": ["project", "summary"]
+                },
                 is_mutation=True,
                 requires_approval=True
             )

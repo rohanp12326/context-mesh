@@ -150,14 +150,107 @@ async def verify_notion_connection(api_key: str) -> Tuple[bool, str, float]:
         return False, f"Could not connect to Notion API: {str(e)}", 0.0
 
 
-async def verify_gmail_connection(account_email: str) -> Tuple[bool, str, float]:
-    """Validate Gmail configuration format."""
-    if not account_email or "@" not in account_email:
-        return False, "Valid email address required.", 0.0
-    return True, f"Gmail configuration verified for {account_email} (Ready for OAuth)", 1.0
+async def verify_gmail_connection(
+    account_email: str,
+    app_password: Optional[str] = None,
+    access_token: Optional[str] = None
+) -> Tuple[bool, str, float]:
+    """Test live Gmail connectivity using either Google App Password (IMAP SSL) or OAuth Bearer Token."""
+    clean_email = (account_email or "").strip()
+    if not clean_email or "@" not in clean_email:
+        return False, "A valid email address (e.g. user@gmail.com) is required.", 0.0
+
+    start = time.time()
+
+    # 1. Test via Google App Password (IMAP SSL)
+    if app_password and app_password.strip():
+        clean_pw = app_password.strip().replace(" ", "")
+        try:
+            import imaplib
+            import asyncio
+
+            def _test_imap():
+                mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+                mail.login(clean_email, clean_pw)
+                mail.select("INBOX", readonly=True)
+                mail.logout()
+
+            await asyncio.to_thread(_test_imap)
+            latency = round((time.time() - start) * 1000.0, 2)
+            return True, f"Successfully authenticated to Gmail as {clean_email} via IMAP SSL ({latency}ms)!", latency
+        except Exception as e:
+            err_msg = str(e)
+            if "AUTHENTICATIONFAILED" in err_msg or "Invalid credentials" in err_msg:
+                return (
+                    False,
+                    "Authentication failed: Invalid Gmail address or App Password. "
+                    "Make sure you generate a 16-character App Password at myaccount.google.com/apppasswords.",
+                    0.0
+                )
+            return False, f"Could not connect to Gmail IMAP: {err_msg}", 0.0
+
+    # 2. Test via OAuth Access Token (Gmail REST API)
+    if access_token and access_token.strip():
+        clean_token = access_token.strip()
+        url = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+        headers = {"Authorization": f"Bearer {clean_token}"}
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.get(url, headers=headers)
+                latency = round((time.time() - start) * 1000.0, 2)
+                if resp.status_code == 200:
+                    profile = resp.json()
+                    email_addr = profile.get("emailAddress", clean_email)
+                    return True, f"Connected to Gmail API as {email_addr} ({latency}ms)!", latency
+                elif resp.status_code == 401:
+                    return False, "OAuth token expired or unauthorized (401).", latency
+                else:
+                    return False, f"Gmail API error {resp.status_code}: {resp.text[:120]}", latency
+        except Exception as e:
+            return False, f"Could not reach Gmail REST API: {str(e)}", 0.0
+
+    return False, "Please provide a Google App Password (16 chars) or OAuth Access Token.", 0.0
+
+
+async def verify_mcp_connection(
+    service: str,
+    endpoint_url: str,
+    auth_token: Optional[str] = None,
+    user_email: Optional[str] = None,
+) -> Tuple[bool, str, float]:
+    """Test connectivity to an official remote MCP server."""
+    clean_url = (endpoint_url or "").strip()
+    if not clean_url:
+        return False, "Endpoint URL is required.", 0.0
+    if not clean_url.startswith("http"):
+        clean_url = f"https://{clean_url}"
+
+    clean_token = (auth_token or "").strip()
+    if not clean_token:
+        return False, f"Authentication token is required for {service.capitalize()} official MCP server.", 0.0
+
+    start = time.time()
+    try:
+        from mcp_servers.remote_client import RemoteMCPClient
+        client = RemoteMCPClient(
+            service=service,
+            endpoint_url=clean_url,
+            auth_token=clean_token,
+            user_email=user_email,
+            timeout=8.0,
+        )
+        tools = await client.list_tools()
+        latency = round((time.time() - start) * 1000.0, 2)
+        return True, f"Connected to {service.capitalize()} Official MCP Server ({len(tools)} tools discovered, {latency}ms)!", latency
+    except Exception as e:
+        latency = round((time.time() - start) * 1000.0, 2)
+        return False, f"MCP connection to {clean_url} failed: {str(e)}", latency
+
 
 # Aliases
 test_zai_connection = verify_zai_connection
 test_jira_connection = verify_jira_connection
 test_notion_connection = verify_notion_connection
 test_gmail_connection = verify_gmail_connection
+test_mcp_connection = verify_mcp_connection
+

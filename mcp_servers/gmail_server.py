@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional
 from connectors.gmail.connector import GmailConnector
 from connectors.base import PermissionScope
-from mcp_servers.base import MCPToolDefinition, MCPToolParameter, MCPToolResult
+from mcp_servers.base import MCPToolDefinition, MCPToolResult
 
 
 class GmailMCPServer:
@@ -17,19 +17,27 @@ class GmailMCPServer:
             MCPToolDefinition(
                 name="gmail.search_messages",
                 description="Search Gmail email threads and messages for discussions, approvals, and commitments.",
-                parameters=[
-                    MCPToolParameter(name="query", type="string", description="Search query terms or subject", required=True),
-                    MCPToolParameter(name="limit", type="integer", description="Max number of threads", required=False, default=10)
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query terms or subject"},
+                        "limit": {"type": "integer", "description": "Max number of threads", "default": 10}
+                    },
+                    "required": ["query"]
+                },
                 is_mutation=False,
                 requires_approval=False
             ),
             MCPToolDefinition(
                 name="gmail.get_thread",
                 description="Get full content of an email thread by thread ID.",
-                parameters=[
-                    MCPToolParameter(name="thread_id", type="string", description="Email thread ID", required=True)
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "thread_id": {"type": "string", "description": "Email thread ID"}
+                    },
+                    "required": ["thread_id"]
+                },
                 is_mutation=False,
                 requires_approval=False
             )

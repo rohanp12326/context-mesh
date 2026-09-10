@@ -9,6 +9,22 @@
     ],
     "issues": [
       {
+        "key": "ATL-100",
+        "project": "ATL",
+        "summary": "Setup base VPC and Redis clustering for auth sessions",
+        "description": "Initialize AWS VPC subnets and Redis 7.0 clustering for auth session caching.",
+        "status": "Done",
+        "priority": "High",
+        "issue_type": "Task",
+        "assignee": "priya.sharma@company.com",
+        "reporter": "sarah.jenkins@company.com",
+        "is_blocker": false,
+        "blocks": [],
+        "created_at": "2026-09-01T09:00:00Z",
+        "updated_at": "2026-09-04T16:00:00Z",
+        "url": "https://company.atlassian.net/browse/ATL-100"
+      },
+      {
         "key": "ATL-101",
         "project": "ATL",
         "summary": "Fix OAuth2 token refresh race condition on auth-service",

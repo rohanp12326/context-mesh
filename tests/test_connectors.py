@@ -39,3 +39,114 @@ async def test_connector_permissions(jira_connector):
     scope = PermissionScope(allowed_scopes=["read:notion"])  # Missing read:jira
     with pytest.raises(PermissionError):
         await jira_connector.search("Atlas", scope=scope)
+
+
+@pytest.mark.asyncio
+async def test_gmail_live_rest_search(monkeypatch):
+    import httpx
+    from connectors.gmail.connector import GmailConnector
+
+    conn = GmailConnector(mode="live", access_token="ya29.test_token")
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url, *args, **kwargs):
+            class MockResp:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    if "messages?" in url or url.endswith("/messages"):
+                        return {"messages": [{"id": "msg_live_01"}]}
+                    else:
+                        return {
+                            "id": "msg_live_01",
+                            "snippet": "Priya confirmed the launch date is delayed.",
+                            "payload": {
+                                "headers": [
+                                    {"name": "Subject", "value": "Release Update"},
+                                    {"name": "From", "value": "priya@company.com"},
+                                    {"name": "Date", "value": "2026-09-09"}
+                                ]
+                            }
+                        }
+            return MockResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    items = await conn.search("release", limit=1)
+    assert len(items) == 1
+    assert items[0].id == "gmail-msg_live_01"
+    assert "Release Update" in items[0].title
+    assert "delayed" in items[0].content
+
+
+@pytest.mark.asyncio
+async def test_notion_live_search_with_blocks(monkeypatch):
+    import httpx
+    from connectors.notion.connector import NotionConnector
+
+    conn = NotionConnector(mode="live", api_key="ntn_live_test_key")
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, *args, **kwargs):
+            class MockResp:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {
+                        "results": [
+                            {
+                                "id": "page-123",
+                                "url": "https://notion.so/page-123",
+                                "last_edited_time": "2026-09-09T10:00:00Z",
+                                "properties": {
+                                    "title": {
+                                        "id": "title",
+                                        "title": [{"plain_text": "Live Architecture Spec"}]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+            return MockResp()
+
+        async def get(self, url, *args, **kwargs):
+            class MockResp:
+                status_code = 200
+                def json(self):
+                    return {
+                        "results": [
+                            {
+                                "type": "paragraph",
+                                "paragraph": {
+                                    "rich_text": [{"plain_text": "Detailed architecture guidelines for Atlas."}]
+                                }
+                            }
+                        ]
+                    }
+            return MockResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    items = await conn.search("architecture", limit=1)
+    assert len(items) == 1
+    assert items[0].title == "Live Architecture Spec"
+    assert "Detailed architecture guidelines" in items[0].content
+
