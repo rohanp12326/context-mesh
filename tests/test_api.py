@@ -31,7 +31,9 @@ async def test_chat_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_chat_endpoint_jit_auth_challenge():
+async def test_chat_endpoint_jit_auth_challenge(monkeypatch):
+    from security.vault import VAULT
+    monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         payload = {
             "query": "What did Priya commit to completing this week?",

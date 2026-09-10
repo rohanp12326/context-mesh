@@ -5,7 +5,10 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional
+from dotenv import load_dotenv
 import httpx
+
+load_dotenv()
 
 from security.vault import VAULT
 from observability.logging import get_logger
@@ -117,34 +120,103 @@ class ZAIClient:
 
         # If planner request (expecting JSON plan)
         if "lead query planner" in s_lower or "strict json" in u_lower:
+            from agent.router import AppRouter
+
+            # Extract the actual user query from the prompt wrapper
+            match = re.search(r'User Query:\s*"([^"]+)"', user_msg)
+            actual_query = match.group(1) if match else user_msg
+            q_lower = actual_query.lower()
+
+            if AppRouter.is_zero_tool_query(actual_query):
+                return json.dumps({
+                    "user_intent": "direct_answer",
+                    "entities": {},
+                    "steps": [],
+                    "dependencies": {}
+                })
+
+            target_apps = AppRouter.determine_apps(actual_query)
             steps = []
-            if "block" in u_lower or "auth" in u_lower or "jira" in u_lower or "release" in u_lower:
+
+            if "create" in q_lower and "task" in q_lower:
                 steps.append({
                     "id": "s1",
-                    "tool": "jira.search_issues",
-                    "query": "project = ATL AND (status != Done OR is_blocker = true)",
-                    "purpose": "Find blocker issues in Jira"
-                })
-            if "notion" in u_lower or "spec" in u_lower or "plan" in u_lower or "delay" in u_lower:
-                steps.append({
-                    "id": "s2",
-                    "tool": "notion.search_pages",
-                    "query": "Atlas launch plan spec",
-                    "purpose": "Find release requirements and architecture specs"
-                })
-            if "email" in u_lower or "commit" in u_lower or "delay" in u_lower or "priya" in u_lower or "marcus" in u_lower:
-                steps.append({
-                    "id": "s3",
-                    "tool": "gmail.search_messages",
-                    "query": "Atlas commitments newer_than:30d",
-                    "purpose": "Find stakeholder discussions and commitments"
-                })
-            if "create" in u_lower and "task" in u_lower:
-                steps.append({
-                    "id": "s4",
                     "tool": "jira.create_issue",
                     "query": "project = ATL",
-                    "purpose": "Create proposed Jira task for Redis session encryption"
+                    "purpose": "Create proposed Jira task for Redis session encryption",
+                    "arguments": {
+                        "project": "ATL",
+                        "summary": "Audit Redis session encryption",
+                        "priority": "High"
+                    }
+                })
+
+            if "jira" in target_apps:
+                if "block" in q_lower or "release" in q_lower:
+                    steps.append({
+                        "id": f"s{len(steps)+1}",
+                        "tool": "jira.search_issues",
+                        "query": "project = ATL AND (status != Done OR is_blocker = true)",
+                        "purpose": "Find blocker issues in Jira",
+                        "arguments": {"query": "project = ATL AND (status != Done OR is_blocker = true)", "limit": 10}
+                    })
+                elif any(w in q_lower for w in ["closed", "done", "resolved", "completed"]):
+                    steps.append({
+                        "id": f"s{len(steps)+1}",
+                        "tool": "jira.search_issues",
+                        "query": "statusCategory = Done",
+                        "purpose": "Find closed Jira tasks",
+                        "arguments": {"query": "statusCategory = Done", "limit": 10}
+                    })
+                elif "task" in q_lower:
+                    steps.append({
+                        "id": f"s{len(steps)+1}",
+                        "tool": "jira.search_issues",
+                        "query": "project = ATL AND statusCategory != Done",
+                        "purpose": "Find open Jira issues",
+                        "arguments": {"query": "project = ATL AND statusCategory != Done", "limit": 10}
+                    })
+                else:
+                    steps.append({
+                        "id": f"s{len(steps)+1}",
+                        "tool": "jira.search_issues",
+                        "query": "Atlas",
+                        "purpose": "Find related Jira issues",
+                        "arguments": {"query": "Atlas", "limit": 10}
+                    })
+
+            if "notion" in target_apps:
+                notion_query = "Atlas launch plan spec" if ("spec" in q_lower or "plan" in q_lower) else ("open tasks action items" if "task" in q_lower else ("Atlas" if "atlas" in q_lower else ""))
+                steps.append({
+                    "id": f"s{len(steps)+1}",
+                    "tool": "notion.search_pages",
+                    "query": notion_query,
+                    "purpose": "Find release requirements and architecture specs",
+                    "arguments": {"query": notion_query, "limit": 5}
+                })
+
+            if "gmail" in target_apps:
+                stopwords = {
+                    "what", "are", "my", "is", "the", "show", "me", "get", "find", "check",
+                    "search", "for", "from", "with", "about", "emails", "email", "mails", "mail",
+                    "inbox", "recent", "latest", "pending", "new", "messages", "message", "do", "i", "have"
+                }
+                words = [w for w in re.findall(r"\b[a-z0-9_-]+\b", q_lower) if w not in stopwords and len(w) > 2]
+                if "priya" in q_lower or "commit" in q_lower:
+                    gmail_query = "Atlas commitments newer_than:30d" if ("atlas" in q_lower or "priya" in q_lower or "release" in q_lower or "blocker" in q_lower) else "commitments"
+                elif "atlas" in q_lower:
+                    gmail_query = "Atlas"
+                elif words:
+                    gmail_query = " ".join(words)
+                else:
+                    gmail_query = ""
+
+                steps.append({
+                    "id": f"s{len(steps)+1}",
+                    "tool": "gmail.search_messages",
+                    "query": gmail_query,
+                    "purpose": "Find stakeholder discussions and communications",
+                    "arguments": {"query": gmail_query, "limit": 10}
                 })
 
             if not steps:
@@ -152,12 +224,13 @@ class ZAIClient:
                     "id": "s1",
                     "tool": "jira.search_issues",
                     "query": "Atlas",
-                    "purpose": "Default query"
+                    "purpose": "Default query",
+                    "arguments": {"query": "Atlas", "limit": 10}
                 })
 
             return json.dumps({
-                "user_intent": "cross_tool_inquiry",
-                "entities": {"project": "Atlas"},
+                "user_intent": "cross_tool_inquiry" if len(target_apps) > 1 else "app_specific_inquiry",
+                "entities": {"project": "Atlas"} if "atlas" in q_lower else {},
                 "steps": steps,
                 "dependencies": {}
             })

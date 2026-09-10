@@ -212,9 +212,45 @@ async def verify_gmail_connection(
     return False, "Please provide a Google App Password (16 chars) or OAuth Access Token.", 0.0
 
 
+async def verify_mcp_connection(
+    service: str,
+    endpoint_url: str,
+    auth_token: Optional[str] = None,
+    user_email: Optional[str] = None,
+) -> Tuple[bool, str, float]:
+    """Test connectivity to an official remote MCP server."""
+    clean_url = (endpoint_url or "").strip()
+    if not clean_url:
+        return False, "Endpoint URL is required.", 0.0
+    if not clean_url.startswith("http"):
+        clean_url = f"https://{clean_url}"
+
+    clean_token = (auth_token or "").strip()
+    if not clean_token:
+        return False, f"Authentication token is required for {service.capitalize()} official MCP server.", 0.0
+
+    start = time.time()
+    try:
+        from mcp_servers.remote_client import RemoteMCPClient
+        client = RemoteMCPClient(
+            service=service,
+            endpoint_url=clean_url,
+            auth_token=clean_token,
+            user_email=user_email,
+            timeout=8.0,
+        )
+        tools = await client.list_tools()
+        latency = round((time.time() - start) * 1000.0, 2)
+        return True, f"Connected to {service.capitalize()} Official MCP Server ({len(tools)} tools discovered, {latency}ms)!", latency
+    except Exception as e:
+        latency = round((time.time() - start) * 1000.0, 2)
+        return False, f"MCP connection to {clean_url} failed: {str(e)}", latency
+
+
 # Aliases
 test_zai_connection = verify_zai_connection
 test_jira_connection = verify_jira_connection
 test_notion_connection = verify_notion_connection
 test_gmail_connection = verify_gmail_connection
+test_mcp_connection = verify_mcp_connection
 

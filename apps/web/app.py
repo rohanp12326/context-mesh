@@ -11,6 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from dotenv import load_dotenv
+load_dotenv(PROJECT_ROOT / ".env")
+
 import streamlit as st
 from agent.graph import ContextMeshAgent
 from connectors.base import PermissionScope
@@ -64,7 +67,7 @@ def _agent_response_is_fresh() -> bool:
     try:
         import agent.state
         fields = agent.state.AgentResponse.model_fields
-        return "auth_required" in fields and "missing_services" in fields
+        return "auth_required" in fields and "missing_services" in fields and "skipped_services" in fields
     except Exception:
         return False
 
@@ -73,6 +76,7 @@ _needs_reload = (
     "agent" not in st.session_state
     or not hasattr(st.session_state.agent, "run")
     or "allow_auth_gate" not in inspect.signature(st.session_state.agent.run).parameters
+    or "skip_unauthenticated" not in inspect.signature(st.session_state.agent.run).parameters
     or not hasattr(_vault(), "get_missing_services")
     or not _agent_response_is_fresh()
 )
@@ -191,16 +195,27 @@ with tab_chat:
                         st.markdown(f"- **[{source.upper()}]** [{claim}]({url})")
 
     # Render Pending Authentication Challenge if active
+    # Render Pending Authentication Challenge if active
     if st.session_state.pending_auth:
         challenge = st.session_state.pending_auth
         missing_svcs = challenge.get("missing_services", [])
         pending_q = challenge.get("query", "")
+        required_svcs = challenge.get("required_services", [])
+        connected_svcs = challenge.get("connected_services", [s for s in required_svcs if s not in missing_svcs])
 
-        st.warning(
-            f"🔐 **Live App Authentication Required to Fetch Real Data**\n\n"
-            f"Your query involves **{', '.join(s.upper() for s in missing_svcs)}**. "
-            "To fetch your real organizational data instead of demo data, authenticate below:"
-        )
+        if connected_svcs:
+            st.info(
+                f"🟢 **Connected Services**: {', '.join(s.upper() for s in connected_svcs)} | "
+                f"🔴 **Missing Auth**: {', '.join(s.upper() for s in missing_svcs)}\n\n"
+                f"Your query involves **{', '.join(s.upper() for s in missing_svcs)}**, which is currently not authenticated. "
+                f"You can authenticate below, or **proceed immediately** using your connected service(s) ({', '.join(s.upper() for s in connected_svcs)})."
+            )
+        else:
+            st.warning(
+                f"🔐 **Live App Authentication Required to Fetch Real Data**\n\n"
+                f"Your query involves **{', '.join(s.upper() for s in missing_svcs)}**. "
+                "To fetch your real organizational data instead of demo data, authenticate below:"
+            )
 
         with st.container(border=True):
             tabs_auth = st.tabs([f"Connect {s.upper()}" for s in missing_svcs])
@@ -209,6 +224,13 @@ with tab_chat:
                 with tabs_auth[idx]:
                     if svc == "jira":
                         st.markdown("#### 📌 Connect Atlassian Jira")
+                        st.link_button("🔗 Open Atlassian API Token Page", "https://id.atlassian.com/manage-profile/security/api-tokens", use_container_width=True)
+                        st.info(
+                            "**How to get your Jira API Token (30 seconds):**\n\n"
+                            "1. Click the button above to open Atlassian Security.\n"
+                            "2. Click **Create API token**, label it `ContextMesh`, and copy the token.\n"
+                            "3. Enter your Jira URL (e.g. `https://your-company.atlassian.net`), email, and token below."
+                        )
                         j_url = st.text_input("Jira URL", placeholder="https://your-company.atlassian.net", key="jit_jira_url")
                         j_email = st.text_input("User Email", placeholder="you@company.com", key="jit_jira_email")
                         j_token = st.text_input("Atlassian API Token", type="password", placeholder="ATATT3xFfGF0...", key="jit_jira_token")
@@ -224,6 +246,13 @@ with tab_chat:
 
                     elif svc == "notion":
                         st.markdown("#### 📓 Connect Notion Integration")
+                        st.link_button("🔗 Open Notion Integrations Manager", "https://www.notion.so/my-integrations", use_container_width=True)
+                        st.info(
+                            "**How to get your Notion Integration Secret (1 minute):**\n\n"
+                            "1. Click the button above to open Notion's integration portal.\n"
+                            "2. Click **+ New integration**, name it `ContextMesh`, select your workspace, and copy the **Internal Integration Secret** (`ntn_...`).\n"
+                            "3. **Crucial Step**: In your Notion app, open the page or spec you want ContextMesh to read, click `...` at top-right -> **Connect to** -> choose `ContextMesh`."
+                        )
                         n_token = st.text_input("Internal Integration Secret", type="password", placeholder="ntn_...", key="jit_notion_token")
                         if st.button("⚡ Test & Connect Notion", key="btn_jit_notion"):
                             with st.spinner("Verifying Notion connection..."):
@@ -238,11 +267,28 @@ with tab_chat:
                     elif svc == "gmail":
                         st.markdown("#### 📧 Connect Gmail")
                         gm_auth_mode = st.radio("Gmail Auth Method", ["Google App Password (16 chars)", "OAuth2 Bearer Token"], horizontal=True, key="jit_gm_mode")
-                        gm_email = st.text_input("Gmail Address", placeholder="you@company.com", key="jit_gm_email")
+
                         if "App Password" in gm_auth_mode:
+                            st.link_button("🔗 Open Google App Passwords Page", "https://myaccount.google.com/apppasswords", use_container_width=True)
+                            st.info(
+                                "**How to get a Google App Password (Fastest & Easiest):**\n\n"
+                                "1. Click **Open Google App Passwords Page** above.\n"
+                                "2. If prompted, sign in with your Google account. *(Requires 2-Step Verification enabled)*.\n"
+                                "3. Type an app name (e.g. `ContextMesh`) and click **Create**.\n"
+                                "4. Copy the **16-letter password** (e.g. `xxxx xxxx xxxx xxxx`) and paste it below."
+                            )
+                            gm_email = st.text_input("Gmail Address", placeholder="you@company.com", key="jit_gm_email")
                             gm_pw = st.text_input("16-character App Password", type="password", placeholder="xxxx xxxx xxxx xxxx", key="jit_gm_pw")
                             gm_tok = None
                         else:
+                            st.link_button("🔗 Open Google OAuth2 Playground", "https://developers.google.com/oauthplayground", use_container_width=True)
+                            st.info(
+                                "**For Technical Users / Developers:**\n\n"
+                                "1. Click the button above to open Google OAuth2 Playground.\n"
+                                "2. Select `https://mail.google.com/` scope, authorize, and exchange the code for tokens.\n"
+                                "3. Copy the `ya29.a0...` Access Token and paste it below."
+                            )
+                            gm_email = st.text_input("Gmail Address", placeholder="you@company.com", key="jit_gm_email")
                             gm_tok = st.text_input("OAuth2 Access Token", type="password", placeholder="ya29.a0...", key="jit_gm_tok")
                             gm_pw = None
 
@@ -261,15 +307,38 @@ with tab_chat:
                                 else:
                                     st.error(f"❌ {msg}")
 
+                    if connected_svcs:
+                        st.markdown("---")
+                        if st.button(f"⏩ Skip {svc.upper()} & Proceed with {', '.join(s.upper() for s in connected_svcs)}", key=f"btn_tab_skip_{svc}"):
+                            with st.spinner(f"Proceeding with {', '.join(s.upper() for s in connected_svcs)} only..."):
+                                response = run_agent_async(
+                                    query=pending_q,
+                                    thread_id="streamlit_session",
+                                    can_mutate=False,
+                                    skip_unauthenticated=True,
+                                    allow_auth_gate=False
+                                )
+                                st.session_state.pending_auth = None
+                                st.session_state.last_response = response
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": response.answer,
+                                    "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
+                                    "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations]
+                                })
+                                st.rerun()
+
             st.markdown("---")
             col_act1, col_act2, col_act3 = st.columns([2, 2, 1])
             with col_act1:
-                if st.button("🚀 Fetch Real Data Now", type="primary", key="btn_exec_live"):
-                    with st.spinner("Fetching live data from connected enterprise systems..."):
+                live_label = f"⏩ Proceed with {', '.join(s.upper() for s in connected_svcs)}" if connected_svcs else "🚀 Fetch Real Data Now"
+                if st.button(live_label, type="primary", key="btn_exec_live"):
+                    with st.spinner(f"Fetching live data from {'connected systems' if not connected_svcs else ', '.join(s.upper() for s in connected_svcs)}..."):
                         response = run_agent_async(
                             query=pending_q,
                             thread_id="streamlit_session",
                             can_mutate=False,
+                            skip_unauthenticated=bool(connected_svcs),
                             allow_auth_gate=False
                         )
                         st.session_state.pending_auth = None
@@ -304,8 +373,33 @@ with tab_chat:
 
             with col_act3:
                 if st.button("❌ Cancel", key="btn_cancel_auth"):
-                    st.session_state.pending_auth = None
-                    st.rerun()
+                    if connected_svcs:
+                        with st.spinner(f"Proceeding with {', '.join(s.upper() for s in connected_svcs)}..."):
+                            response = run_agent_async(
+                                query=pending_q,
+                                thread_id="streamlit_session",
+                                can_mutate=False,
+                                skip_unauthenticated=True,
+                                allow_auth_gate=False
+                            )
+                            st.session_state.pending_auth = None
+                            st.session_state.last_response = response
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": response.answer,
+                                "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
+                                "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations]
+                            })
+                            st.rerun()
+                    else:
+                        st.session_state.pending_auth = None
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"❌ **Query Canceled**: Operation canceled without authenticating {', '.join(s.upper() for s in missing_svcs)}.",
+                            "plan": None,
+                            "citations": []
+                        })
+                        st.rerun()
 
     # Render Pending Human Mutation Approval if active
     if st.session_state.pending_approval:
@@ -396,6 +490,8 @@ with tab_chat:
                 demo_svcs = [s for s in response.required_services if s not in live_svcs]
                 if live_svcs:
                     st.success(f"🟢 **Live Data Retrieved From**: {', '.join(s.upper() for s in live_svcs)}")
+                if getattr(response, "skipped_services", None):
+                    st.info(f"⚪ **Skipped (Not Authenticated)**: {', '.join(s.upper() for s in response.skipped_services)}")
                 if demo_svcs:
                     st.caption(f"🧪 **Demo Data Used For**: {', '.join(s.upper() for s in demo_svcs)}")
 

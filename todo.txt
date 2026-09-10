@@ -1,0 +1,1 @@
+Add websearch to the direct query and long route

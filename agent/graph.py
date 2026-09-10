@@ -46,10 +46,11 @@ class ContextMeshAgent:
         force_demo: bool = False,
         allow_auth_gate: bool = False,
         require_live: bool = False,
+        skip_unauthenticated: bool = False,
         **kwargs
     ) -> AgentResponse:
         """Run the full agentic retrieval pipeline for a user query."""
-        logger.info(f"ContextMeshAgent.run() started: query='{query}', user='{user_id}', thread='{thread_id}', can_mutate={can_mutate}, force_demo={force_demo}, allow_auth_gate={allow_auth_gate}")
+        logger.info(f"ContextMeshAgent.run() started: query='{query}', user='{user_id}', thread='{thread_id}', can_mutate={can_mutate}, force_demo={force_demo}, allow_auth_gate={allow_auth_gate}, skip_unauthenticated={skip_unauthenticated}")
         trace: RequestTrace = GLOBAL_TRACER.start_trace("agent_request", user_id=user_id, thread_id=thread_id)
         root_span = trace.root_span
 
@@ -68,40 +69,82 @@ class ContextMeshAgent:
         logger.info(f"Query plan generated: intent='{plan.user_intent}', steps={len(plan.steps)}, risk='{plan.risk_level}', requires_approval={plan.requires_approval}")
         plan_span.finish()
 
+        # 3. Check for Zero-Tool / Direct Answer path (bypasses tools and auth gates)
+        if not plan.steps or plan.user_intent == "direct_answer":
+            logger.info("Query classified as zero-tool/direct-answer. Bypassing tool execution and auth gates.")
+            gen_span = GLOBAL_TRACER.add_span(root_span, "direct_answer_generation")
+            response = await self.synthesizer.synthesize_direct(query=query, trace_id=trace.trace_id)
+            response.plan = plan
+            response.required_services = []
+            gen_span.finish()
+
+            self.short_term.append_message(thread_id, "assistant", response.answer)
+            GLOBAL_TRACER.finish_trace(trace.trace_id)
+            logger.info(f"ContextMeshAgent.run() completed direct answer. Trace: {trace.trace_id}")
+            return response
+
         # Detect required services from plan steps
         required_services = list(dict.fromkeys(
             step.tool.split(".")[0] for step in plan.steps if "." in step.tool
         ))
 
-        # 3. Check for Just-In-Time Authentication Gate
-        if (allow_auth_gate or require_live) and not force_demo:
-            from security.vault import VAULT
-            missing_services = VAULT.get_missing_services(required_services)
-            if missing_services:
-                logger.info(f"Query requires services {required_services}, but {missing_services} lack live authentication. Halting for JIT auth.")
-                GLOBAL_TRACER.finish_trace(trace.trace_id)
-                services_str = ", ".join(s.upper() for s in missing_services)
-                return AgentResponse(
-                    answer=(
-                        f"🔐 **Authentication Required**: This query needs data from **{services_str}**. "
-                        "Connect your account(s) below to fetch your real enterprise data, or proceed with demo data."
-                    ),
-                    citations=[],
-                    confidence=1.0,
-                    plan=plan,
-                    contradictions=[],
-                    trace_id=trace.trace_id,
-                    requires_approval=False,
-                    auth_required=True,
-                    missing_services=missing_services,
-                    required_services=required_services,
-                    auth_challenge={
-                        "query": query,
-                        "required_services": required_services,
-                        "missing_services": missing_services,
-                        "plan": plan.model_dump()
-                    }
-                )
+        from security.vault import VAULT
+        missing_services = VAULT.get_missing_services(required_services)
+        connected_services = [s for s in required_services if s not in missing_services]
+        skipped_services: List[str] = []
+
+        # If skip_unauthenticated is requested, prune steps for unauthenticated services
+        if skip_unauthenticated and missing_services:
+            logger.info(f"skip_unauthenticated=True: Pruning steps for unauthenticated services {missing_services}")
+            skipped_services = list(missing_services)
+            plan.steps = [s for s in plan.steps if s.tool.split(".")[0] not in missing_services]
+            required_services = [s for s in required_services if s not in missing_services]
+            missing_services = []
+
+        # If all steps were pruned because no required services are authenticated
+        if not plan.steps and skipped_services:
+            GLOBAL_TRACER.finish_trace(trace.trace_id)
+            services_str = ", ".join(s.upper() for s in skipped_services)
+            return AgentResponse(
+                answer=(
+                    f"⚠️ All required services ({services_str}) were skipped because they lack live authentication. "
+                    "Please connect your account(s) or run with demo data."
+                ),
+                citations=[],
+                confidence=0.0,
+                plan=plan,
+                skipped_services=skipped_services,
+                required_services=[]
+            )
+
+        # 4. Check for Just-In-Time Authentication Gate
+        if (allow_auth_gate or require_live) and not force_demo and missing_services:
+            logger.info(f"Query requires services {required_services}, but {missing_services} lack live authentication. Halting for JIT auth.")
+            GLOBAL_TRACER.finish_trace(trace.trace_id)
+            services_str = ", ".join(s.upper() for s in missing_services)
+            return AgentResponse(
+                answer=(
+                    f"🔐 **Authentication Required**: This query needs data from **{services_str}**. "
+                    "Connect your account(s) below to fetch your real enterprise data, or proceed with demo data."
+                ),
+                citations=[],
+                confidence=1.0,
+                plan=plan,
+                contradictions=[],
+                trace_id=trace.trace_id,
+                requires_approval=False,
+                auth_required=True,
+                missing_services=missing_services,
+                required_services=required_services,
+                skipped_services=skipped_services,
+                auth_challenge={
+                    "query": query,
+                    "required_services": required_services,
+                    "missing_services": missing_services,
+                    "connected_services": connected_services,
+                    "plan": plan.model_dump()
+                }
+            )
 
         # 4. Check for Mutation Approval Gate
         if plan.requires_approval and not can_mutate:
@@ -205,6 +248,7 @@ class ContextMeshAgent:
             trace_id=trace.trace_id
         )
         response.required_services = required_services
+        response.skipped_services = skipped_services
         gen_span.finish()
         logger.info(f"Synthesized response: {len(response.citations)} citations, confidence={response.confidence}")
 

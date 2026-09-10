@@ -9,7 +9,8 @@ from security.connection_testers import (
     test_zai_connection,
     test_jira_connection,
     test_notion_connection,
-    test_gmail_connection
+    test_gmail_connection,
+    test_mcp_connection,
 )
 
 
@@ -76,6 +77,12 @@ def render_auth_wizard():
         st.info(
             "ContextMesh uses ZAI's GLM foundation models for query decomposition, risk analysis, and cited answer synthesis."
         )
+
+        col_zb1, col_zb2 = st.columns(2)
+        with col_zb1:
+            st.link_button("🔗 Open Zhipu BigModel Console", "https://open.bigmodel.cn/usercenter/apikeys", use_container_width=True)
+        with col_zb2:
+            st.link_button("🔗 Open Z.ai Global Platform", "https://z.ai/", use_container_width=True)
 
         with st.expander("📖 Step-by-Step Guide: How to obtain your ZAI API Key & Endpoints", expanded=False):
             st.markdown("""
@@ -179,68 +186,172 @@ def render_auth_wizard():
     with card_jira:
         st.markdown("### 📌 Atlassian Jira Configuration")
         st.info("Retrieve live sprints, blockers, epics, and execute approval-gated issue creations.")
-
-        with st.expander("📖 Step-by-Step Guide: How to obtain your Atlassian API Token", expanded=False):
-            st.markdown("""
-            1. Log in to your Atlassian account security page: [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-            2. Click **Create API token**.
-            3. Label it (e.g., `ContextMesh Integration`) and copy the token.
-            4. Fill in your Jira instance domain (e.g. `https://your-company.atlassian.net`) and user email below.
-            """)
-
+        
         jira_creds = VAULT.get_credential("jira")
-        jira_url = st.text_input("Jira Instance URL", value=jira_creds.get("base_url", ""), placeholder="https://your-company.atlassian.net")
-        jira_email = st.text_input("Atlassian User Email", value=jira_creds.get("user_email", ""), placeholder="you@company.com")
-        jira_token = st.text_input("Atlassian API Token", value=jira_creds.get("api_token", ""), type="password", placeholder="ATATT3xFfGF0...")
+        jira_auth_type = st.radio(
+            "Connection Protocol",
+            ["Atlassian Cloud REST API (Standard)", "Official Hosted MCP Server (mcp.atlassian.com)"],
+            horizontal=True,
+            key="wizard_jira_auth_type"
+        )
 
-        if st.button("⚡ Test & Save Jira Connection", key="btn_save_jira"):
-            with st.spinner("Verifying Jira credentials via Atlassian REST API..."):
-                ok, msg, latency = asyncio.run(test_jira_connection(jira_url, jira_email, jira_token))
-                if ok:
-                    VAULT.set_credential("jira", {
-                        "base_url": jira_url,
-                        "user_email": jira_email,
-                        "api_token": jira_token
+        if "REST API" in jira_auth_type:
+            st.link_button("🔗 Open Atlassian API Token Page", "https://id.atlassian.com/manage-profile/security/api-tokens", use_container_width=True)
+            with st.expander("📖 Step-by-Step Guide: How to obtain your Atlassian API Token", expanded=False):
+                st.markdown("""
+                1. Click the button above to log into your Atlassian account security page: [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+                2. Click **Create API token**.
+                3. Label it (e.g., `ContextMesh Integration`) and copy the token.
+                4. Fill in your Jira instance domain (e.g. `https://your-company.atlassian.net`) and user email below.
+                """)
+            jira_url = st.text_input("Jira Instance URL", value=jira_creds.get("base_url", ""), placeholder="https://your-company.atlassian.net")
+            jira_email = st.text_input("Atlassian User Email", value=jira_creds.get("user_email", ""), placeholder="you@company.com")
+            jira_token = st.text_input("Atlassian API Token", value=jira_creds.get("api_token", ""), type="password", placeholder="ATATT3xFfGF0...")
+
+            if st.button("⚡ Test & Save Jira Connection", key="btn_save_jira"):
+                with st.spinner("Verifying Jira credentials via Atlassian REST API..."):
+                    ok, msg, latency = asyncio.run(test_jira_connection(jira_url, jira_email, jira_token))
+                    if ok:
+                        data = dict(jira_creds)
+                        data.update({
+                            "base_url": jira_url,
+                            "user_email": jira_email,
+                            "api_token": jira_token
+                        })
+                        VAULT.set_credential("jira", data)
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+        else:
+            st.markdown("Connect directly to the official **Atlassian Rovo Model Context Protocol (MCP)** server.")
+            st.link_button("🔗 Atlassian MCP Documentation & Portal", "https://support.atlassian.com/atlassian-intelligence/docs/connect-rovo-to-model-context-protocol/", use_container_width=True)
+            with st.expander("📖 Atlassian MCP Authentication Details", expanded=False):
+                st.markdown("""
+                - **Personal API Token**: Requires HTTP Basic Auth (`email` + `token`). Org Admin must enable *Allow API token authentication* in Atlassian Admin.
+                - **OAuth 2.1**: Bearer token obtained from Atlassian OAuth redirect flow.
+                """)
+            jira_mcp_url = st.text_input(
+                "Remote MCP Endpoint URL",
+                value=jira_creds.get("mcp_endpoint", "https://mcp.atlassian.com/v2/mcp"),
+                help="Official Atlassian cloud MCP endpoint (SSE transport)"
+            )
+            jira_mcp_email = st.text_input(
+                "Atlassian User Email (Required for API Token)",
+                value=jira_creds.get("user_email", ""),
+                placeholder="you@company.com",
+                help="Required if using an Atlassian API token for Basic Auth. Leave empty if using OAuth 2.1 Bearer token."
+            )
+            jira_mcp_token = st.text_input(
+                "Atlassian API Token or OAuth Bearer Token",
+                value=jira_creds.get("mcp_token", ""),
+                type="password",
+                placeholder="ATATT... (API Token) or OAuth Bearer token..."
+            )
+            if st.button("⚡ Test & Save Jira MCP Connection", key="btn_save_jira_mcp"):
+                with st.spinner("Connecting to official Atlassian MCP server..."):
+                    ok, msg, latency = asyncio.run(test_mcp_connection(
+                        service="jira",
+                        endpoint_url=jira_mcp_url,
+                        auth_token=jira_mcp_token,
+                        user_email=jira_mcp_email.strip() if jira_mcp_email else None
+                    ))
+                    data = dict(jira_creds)
+                    data.update({
+                        "mcp_endpoint": jira_mcp_url.strip(),
+                        "mcp_token": jira_mcp_token.strip()
                     })
-                    st.success(f"✅ {msg}")
+                    if jira_mcp_email.strip():
+                        data["user_email"] = jira_mcp_email.strip()
+                    VAULT.set_credential("jira", data)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                    else:
+                        st.warning(f"Saved credentials, but live test returned: {msg}")
                     st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
 
     # ------------------ NOTION ------------------
     with card_notion:
         st.markdown("### 📓 Notion Configuration")
         st.info("Query project specs, architecture decision records, and meeting runbooks.")
-
-        with st.expander("📖 Step-by-Step Guide: How to set up Notion Internal Integration", expanded=False):
-            st.markdown("""
-            1. Open Notion's integration manager: [https://www.notion.so/my-integrations](https://www.notion.so/my-integrations)
-            2. Click **New integration**.
-            3. Name it `ContextMesh`, associate it with your workspace, and copy the **Internal Integration Secret** (`ntn_...`).
-            4. **Crucial Step**: In your Notion app, open any page or database you want the agent to see, click the `...` menu in the top right, select **Connect to**, and choose your `ContextMesh` integration.
-            """)
-
         notion_creds = VAULT.get_credential("notion")
-        notion_token = st.text_input("Notion Integration Secret", value=notion_creds.get("api_key", ""), type="password", placeholder="ntn_...")
+        notion_auth_type = st.radio(
+            "Connection Protocol",
+            ["Notion Integration Secret (Internal)", "Official Hosted Notion MCP (mcp.notion.com)"],
+            horizontal=True,
+            key="wizard_notion_auth_type"
+        )
 
-        if st.button("⚡ Test & Save Notion Connection", key="btn_save_notion"):
-            with st.spinner("Connecting to Notion API..."):
-                ok, msg, latency = asyncio.run(test_notion_connection(notion_token))
-                if ok:
-                    VAULT.set_credential("notion", {"api_key": notion_token})
-                    st.success(f"✅ {msg}")
+        if "Internal" in notion_auth_type:
+            st.link_button("🔗 Open Notion Integrations Portal", "https://www.notion.so/my-integrations", use_container_width=True)
+            with st.expander("📖 Step-by-Step Guide: How to set up Notion Internal Integration", expanded=False):
+                st.markdown("""
+                1. Click the button above to open Notion's integration manager: [https://www.notion.so/my-integrations](https://www.notion.so/my-integrations)
+                2. Click **New integration**.
+                3. Name it `ContextMesh`, associate it with your workspace, and copy the **Internal Integration Secret** (`ntn_...`).
+                4. **Crucial Step**: In your Notion app, open any page or database you want the agent to see, click the `...` menu in the top right, select **Connect to**, and choose your `ContextMesh` integration.
+                """)
+            notion_token = st.text_input("Notion Integration Secret", value=notion_creds.get("api_key", ""), type="password", placeholder="ntn_...")
+
+            if st.button("⚡ Test & Save Notion Connection", key="btn_save_notion"):
+                with st.spinner("Connecting to Notion API..."):
+                    ok, msg, latency = asyncio.run(test_notion_connection(notion_token))
+                    if ok:
+                        data = dict(notion_creds)
+                        data["api_key"] = notion_token
+                        VAULT.set_credential("notion", data)
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+        else:
+            st.markdown("Connect to the official **Notion Hosted Model Context Protocol (MCP)** server.")
+            st.link_button("🔗 Notion MCP Guide & Developers", "https://developers.notion.com/", use_container_width=True)
+            with st.expander("📖 Notion MCP Authentication Note", expanded=False):
+                st.markdown("""
+                - **Official Hosted MCP (`mcp.notion.com`)**: Strictly requires an **OAuth 2.0 Access Token** with PKCE.
+                - **Internal Integration Secrets (`ntn_...`)**: Cannot be passed directly to `mcp.notion.com` (will return 401). Use the **Notion Integration Secret (Internal)** mode above or run a local stdio MCP server (`@modelcontextprotocol/server-notion`).
+                """)
+            notion_mcp_url = st.text_input(
+                "Remote MCP Endpoint URL",
+                value=notion_creds.get("mcp_endpoint", "https://mcp.notion.com/mcp"),
+                help="Official hosted Notion MCP endpoint"
+            )
+            notion_mcp_token = st.text_input(
+                "Notion MCP / OAuth Bearer Token",
+                value=notion_creds.get("mcp_token", ""),
+                type="password",
+                placeholder="Bearer token from Notion OAuth..."
+            )
+            if st.button("⚡ Test & Save Notion MCP Connection", key="btn_save_notion_mcp"):
+                with st.spinner("Connecting to official Notion MCP server..."):
+                    ok, msg, latency = asyncio.run(test_mcp_connection("notion", notion_mcp_url, notion_mcp_token))
+                    data = dict(notion_creds)
+                    data.update({
+                        "mcp_endpoint": notion_mcp_url.strip(),
+                        "mcp_token": notion_mcp_token.strip()
+                    })
+                    VAULT.set_credential("notion", data)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                    else:
+                        st.warning(f"Saved credentials, but live test returned: {msg}")
                     st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
 
     # ------------------ GMAIL ------------------
     with card_gmail:
         st.markdown("### 📧 Gmail Configuration")
         st.info("Search email threads for stakeholder commitments, release announcements, and approvals.")
 
+        col_gb1, col_gb2 = st.columns(2)
+        with col_gb1:
+            st.link_button("🔗 Open Google App Passwords Page", "https://myaccount.google.com/apppasswords", use_container_width=True)
+        with col_gb2:
+            st.link_button("🔗 Open Google OAuth2 Playground", "https://developers.google.com/oauthplayground", use_container_width=True)
+
         with st.expander("📖 Step-by-Step Guide: Connect with Google App Password (Fastest)", expanded=False):
             st.markdown("""
-            1. Go to your Google Account security settings: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+            1. Click the **Open Google App Passwords Page** button above: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
                *(Requires 2-Step Verification enabled)*.
             2. Enter an app name (e.g. `ContextMesh`) and click **Create**.
             3. Copy the 16-character password displayed (e.g. `xxxx xxxx xxxx xxxx`).
@@ -250,36 +361,74 @@ def render_auth_wizard():
         gmail_creds = VAULT.get_credential("gmail")
         gmail_auth_type = st.radio(
             "Authentication Method",
-            ["Google App Password (Recommended)", "OAuth2 Access Token"],
+            [
+                "Google App Password (Recommended)",
+                "OAuth2 Access Token",
+                "Official Google Workspace MCP (gmailmcp.googleapis.com)"
+            ],
             horizontal=True,
             key="wizard_gmail_auth_type"
         )
 
-        gmail_account = st.text_input("Gmail Address", value=gmail_creds.get("account", ""), placeholder="you@company.com", key="wizard_gmail_email")
-
-        if "App Password" in gmail_auth_type:
-            gmail_app_pw = st.text_input("16-character App Password", value=gmail_creds.get("app_password", ""), type="password", placeholder="xxxx xxxx xxxx xxxx", key="wizard_gmail_pw")
-            gmail_token = None
-        else:
-            gmail_token = st.text_input("OAuth2 Bearer Access Token", value=gmail_creds.get("access_token", ""), type="password", placeholder="ya29.a0...", key="wizard_gmail_token")
-            gmail_app_pw = None
-
-        if st.button("⚡ Test & Save Gmail Connection", key="btn_save_gmail"):
-            with st.spinner("Verifying live connection to Gmail..."):
-                ok, msg, _ = asyncio.run(test_gmail_connection(
-                    account_email=gmail_account,
-                    app_password=gmail_app_pw,
-                    access_token=gmail_token
-                ))
-                if ok:
-                    data = {"account": gmail_account}
-                    if gmail_app_pw:
-                        data["app_password"] = gmail_app_pw
-                    if gmail_token:
-                        data["access_token"] = gmail_token
+        if "Official Google Workspace MCP" in gmail_auth_type:
+            st.link_button("🔗 Google Workspace Gmail MCP Docs", "https://developers.google.com/workspace/gmail/api/reference/mcp", use_container_width=True)
+            with st.expander("📖 Google Workspace MCP Auth Note", expanded=False):
+                st.markdown("""
+                - **Official Gmail MCP (`gmailmcp.googleapis.com`)**: Strictly requires a **Google Cloud OAuth 2.0 Access Token** (`ya29...`) with `gmail.readonly` or `gmail.compose` scope.
+                - **Google App Passwords (16 characters)**: Cannot be used with `gmailmcp.googleapis.com`. App Passwords only work for IMAP (`imap.gmail.com`). Use the **Google App Password** mode above if you don't have an OAuth2 token.
+                """)
+            gmail_mcp_url = st.text_input(
+                "Remote MCP Endpoint URL",
+                value=gmail_creds.get("mcp_endpoint", "https://gmailmcp.googleapis.com/mcp/v1"),
+                help="Official Google Workspace MCP endpoint"
+            )
+            gmail_mcp_token = st.text_input(
+                "Google Workspace OAuth2 Access Token",
+                value=gmail_creds.get("mcp_token", ""),
+                type="password",
+                placeholder="ya29.a0..."
+            )
+            if st.button("⚡ Test & Save Gmail MCP Connection", key="btn_save_gmail_mcp"):
+                with st.spinner("Connecting to official Gmail MCP server..."):
+                    ok, msg, _ = asyncio.run(test_mcp_connection("gmail", gmail_mcp_url, gmail_mcp_token))
+                    data = dict(gmail_creds)
+                    data.update({
+                        "mcp_endpoint": gmail_mcp_url.strip(),
+                        "mcp_token": gmail_mcp_token.strip()
+                    })
                     VAULT.set_credential("gmail", data)
-                    st.success(f"✅ {msg}")
+                    if ok:
+                        st.success(f"✅ {msg}")
+                    else:
+                        st.warning(f"Saved credentials, but live test returned: {msg}")
                     st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
+        else:
+            gmail_account = st.text_input("Gmail Address", value=gmail_creds.get("account", ""), placeholder="you@company.com", key="wizard_gmail_email")
+
+            if "App Password" in gmail_auth_type:
+                gmail_app_pw = st.text_input("16-character App Password", value=gmail_creds.get("app_password", ""), type="password", placeholder="xxxx xxxx xxxx xxxx", key="wizard_gmail_pw")
+                gmail_token = None
+            else:
+                gmail_token = st.text_input("OAuth2 Bearer Access Token", value=gmail_creds.get("access_token", ""), type="password", placeholder="ya29.a0...", key="wizard_gmail_token")
+                gmail_app_pw = None
+
+            if st.button("⚡ Test & Save Gmail Connection", key="btn_save_gmail"):
+                with st.spinner("Verifying live connection to Gmail..."):
+                    ok, msg, _ = asyncio.run(test_gmail_connection(
+                        account_email=gmail_account,
+                        app_password=gmail_app_pw,
+                        access_token=gmail_token
+                    ))
+                    if ok:
+                        data = dict(gmail_creds)
+                        data["account"] = gmail_account
+                        if gmail_app_pw:
+                            data["app_password"] = gmail_app_pw
+                        if gmail_token:
+                            data["access_token"] = gmail_token
+                        VAULT.set_credential("gmail", data)
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 

@@ -59,6 +59,7 @@ class AgentResponse(BaseModel):
     auth_required: bool = False
     missing_services: List[str] = Field(default_factory=list)
     required_services: List[str] = Field(default_factory=list)
+    skipped_services: List[str] = Field(default_factory=list)
     auth_challenge: Optional[Dict[str, Any]] = None
 
     @field_validator("plan", mode="before")

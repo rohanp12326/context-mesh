@@ -51,10 +51,25 @@ ContextMesh uses ZAI's GLM models (e.g. `glm-4-plus`, `glm-4-flash`) via an Open
 ---
 
 ### 📧 2.4 Gmail (Google Workspace)
-1. Go to the **Google Cloud Console**: [https://console.cloud.google.com/](https://console.cloud.google.com/)
-2. Enable the **Gmail API** under APIs & Services.
-3. Create an OAuth 2.0 Client ID (Desktop app) or configure App Passwords for your organization.
-4. Save the client credentials to `secrets/gmail_credentials.json` or configure the account email in the UI.
+
+ContextMesh supports two connection methods for Gmail:
+
+#### Method A: Google App Password (Recommended & Easiest for Non-Technical Users)
+1. Ensure **2-Step Verification** is turned on in your Google Account: [myaccount.google.com/signinoptions/two-step-verification](https://myaccount.google.com/signinoptions/two-step-verification)
+2. Go directly to **Google App Passwords**: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+3. Type an app name (e.g., `ContextMesh`) in the box and click **Create**.
+4. Google will display a 16-character passcode (e.g., `abcd efgh ijkl mnop`). Copy it.
+5. In ContextMesh (either in the popup modal or the "🔐 Integrations & Auth" tab):
+   - Enter your **Gmail Address**.
+   - Paste the **16-character App Password**.
+   - Click **⚡ Test & Connect Gmail**.
+
+#### Method B: OAuth2 Bearer Token (For Developers & Cloud Administrators)
+1. Go to the **Google OAuth2 Playground**: [https://developers.google.com/oauthplayground](https://developers.google.com/oauthplayground)
+2. In Step 1, select `Gmail API v1` -> `https://mail.google.com/`.
+3. Click **Authorize APIs** and log into your account.
+4. In Step 2, click **Exchange authorization code for tokens**.
+5. Copy the generated **Access token** (`ya29.a0...`) and paste it into the UI.
 
 ---
 

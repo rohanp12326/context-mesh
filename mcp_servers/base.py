@@ -4,18 +4,11 @@ from typing import Any, Callable, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-class MCPToolParameter(BaseModel):
-    name: str
-    type: str
-    description: str
-    required: bool = True
-    default: Optional[Any] = None
-
 
 class MCPToolDefinition(BaseModel):
     name: str
     description: str
-    parameters: List[MCPToolParameter]
+    inputSchema: Dict[str, Any]
     is_mutation: bool = False
     requires_approval: bool = False
 

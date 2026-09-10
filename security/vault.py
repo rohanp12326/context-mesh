@@ -5,6 +5,9 @@ import os
 import stat
 from typing import Any, Dict, Optional
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 VAULT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".secrets")
@@ -136,7 +139,9 @@ class CredentialVault:
         """Check if a service has valid, non-placeholder credentials configured."""
         creds = self.get_credential(service)
         if service == "jira":
-            url = creds.get("base_url") or os.getenv("JIRA_BASE_URL", "")
+            if is_valid_credential_value(creds.get("mcp_token") or os.getenv("ATLASSIAN_MCP_TOKEN", "")):
+                return True
+            url = creds.get("base_url") or os.getenv("JIRA_URL") or os.getenv("JIRA_BASE_URL", "")
             email = creds.get("user_email") or os.getenv("JIRA_USER_EMAIL", "")
             token = creds.get("api_token") or os.getenv("JIRA_API_TOKEN", "")
             return (
@@ -145,9 +150,13 @@ class CredentialVault:
                 and is_valid_credential_value(token)
             )
         elif service == "notion":
+            if is_valid_credential_value(creds.get("mcp_token") or os.getenv("NOTION_MCP_TOKEN", "")):
+                return True
             token = creds.get("api_key") or os.getenv("NOTION_API_KEY", "")
             return is_valid_credential_value(token)
         elif service == "gmail":
+            if is_valid_credential_value(creds.get("mcp_token") or os.getenv("GMAIL_MCP_TOKEN", "")):
+                return True
             # Check for App Password mode or OAuth token mode
             app_pw = creds.get("app_password") or os.getenv("GMAIL_APP_PASSWORD", "")
             account = creds.get("account") or os.getenv("GMAIL_ACCOUNT", "")

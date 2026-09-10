@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional
 from connectors.notion.connector import NotionConnector
 from connectors.base import PermissionScope
-from mcp_servers.base import MCPToolDefinition, MCPToolParameter, MCPToolResult
+from mcp_servers.base import MCPToolDefinition, MCPToolResult
 
 
 class NotionMCPServer:
@@ -17,19 +17,27 @@ class NotionMCPServer:
             MCPToolDefinition(
                 name="notion.search_pages",
                 description="Search Notion pages, documents, runbooks, and meeting notes.",
-                parameters=[
-                    MCPToolParameter(name="query", type="string", description="Search terms or page title", required=True),
-                    MCPToolParameter(name="limit", type="integer", description="Max number of pages", required=False, default=10)
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search terms or page title"},
+                        "limit": {"type": "integer", "description": "Max number of pages", "default": 10}
+                    },
+                    "required": ["query"]
+                },
                 is_mutation=False,
                 requires_approval=False
             ),
             MCPToolDefinition(
                 name="notion.get_page_content",
                 description="Get full content of a specific Notion page by page ID.",
-                parameters=[
-                    MCPToolParameter(name="page_id", type="string", description="Notion page ID", required=True)
-                ],
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "page_id": {"type": "string", "description": "Notion page ID"}
+                    },
+                    "required": ["page_id"]
+                },
                 is_mutation=False,
                 requires_approval=False
             )
