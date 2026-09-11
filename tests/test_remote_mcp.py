@@ -214,3 +214,153 @@ async def test_remote_mcp_error_fallback_to_mock():
         assert isinstance(results, list)
         # Should return synthetic items from mock data
         assert len(results) > 0
+
+
+# =========================================================================
+# Composio MCP Client & Streamlined Authentication Tests
+# =========================================================================
+
+def test_composio_client_init_and_properties():
+    from mcp_servers.composio_client import ComposioMCPClient
+    client = ComposioMCPClient(api_key="comp_live_test_key_123", user_id="custom_user")
+    assert client.api_key == "comp_live_test_key_123"
+    assert client.user_id == "custom_user"
+    assert client.headers["x-api-key"] == "comp_live_test_key_123"
+    assert client.is_configured() is True
+
+    empty_client = ComposioMCPClient(api_key="")
+    assert "x-api-key" not in empty_client.headers
+    assert empty_client.is_configured() is False
+
+
+@pytest.mark.asyncio
+async def test_composio_get_auth_url():
+    from mcp_servers.composio_client import ComposioMCPClient
+    import httpx
+
+    client = ComposioMCPClient(api_key="comp_live_key_999", user_id="user_abc")
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {"redirect_url": "https://connect.composio.dev/auth/start?session=xyz"}
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, json=None, **kwargs):
+            return MockResponse()
+
+    with patch.object(httpx, "AsyncClient", MockAsyncClient):
+        url = await client.get_auth_url("jira")
+        assert url == "https://connect.composio.dev/auth/start?session=xyz"
+
+
+@pytest.mark.asyncio
+async def test_composio_check_connection_status():
+    from mcp_servers.composio_client import ComposioMCPClient
+    import httpx
+
+    client = ComposioMCPClient(api_key="comp_live_key_999", user_id="user_abc")
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "items": [
+                    {"id": "ca_jira_123", "status": "ACTIVE", "toolkit": {"slug": "jira"}}
+                ]
+            }
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, params=None, **kwargs):
+            return MockResponse()
+
+    with patch.object(httpx, "AsyncClient", MockAsyncClient):
+        is_active, acc_id = await client.check_connection_status("jira")
+        assert is_active is True
+        assert acc_id == "ca_jira_123"
+
+
+@pytest.mark.asyncio
+async def test_composio_call_tool_action_mapping():
+    from mcp_servers.composio_client import ComposioMCPClient
+    import httpx
+
+    client = ComposioMCPClient(api_key="comp_live_key_999", user_id="user_abc")
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "successful": True,
+                "data": {"issues": [{"key": "ATL-101", "summary": "Fix auth blocker"}]}
+            }
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, json=None, **kwargs):
+            return MockResponse()
+
+    with patch.object(httpx, "AsyncClient", MockAsyncClient):
+        with patch.object(client, "get_or_create_mcp_session", new_callable=AsyncMock) as mock_sess:
+            mock_sess.return_value = {"mcp": {"url": ""}}
+            res = await client.call_tool("jira.search_issues", {"query": "project = ATL"})
+            assert "issues" in res
+            assert res["issues"][0]["key"] == "ATL-101"
+
+
+@pytest.mark.asyncio
+async def test_verify_composio_connection_and_app():
+    from security.connection_testers import verify_composio_connection, verify_composio_app_connection
+    from mcp_servers.composio_client import ComposioMCPClient
+    import httpx
+
+    # Empty key
+    ok, msg, _ = await verify_composio_connection("")
+    assert ok is False
+    assert "empty" in msg.lower()
+
+    # Successful connection
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {"items": [{"id": "ca_1"}]}
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, **kwargs):
+            return MockResponse()
+
+    with patch.object(httpx, "AsyncClient", MockAsyncClient):
+        ok, msg, _ = await verify_composio_connection("valid_key")
+        assert ok is True
+        assert "Successfully connected to Composio" in msg
+
+    # App connection test
+    with patch.object(ComposioMCPClient, "check_connection_status", new_callable=AsyncMock) as mock_chk:
+        mock_chk.return_value = (True, "ca_slack_123")
+        ok, msg, _ = await verify_composio_app_connection("slack")
+        assert ok is True
+        assert "actively connected" in msg.lower()
+

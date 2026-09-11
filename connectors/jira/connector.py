@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from connectors.base import BaseConnector, ConnectorItem, PermissionScope
 from security.vault import VAULT, is_valid_credential_value
+from mcp_servers.composio_client import COMPOSIO_CLIENT
 from observability.logging import get_logger
 
 logger = get_logger("connectors.jira")
@@ -177,7 +178,7 @@ class JiraConnector(BaseConnector):
             self._cached_cloud_id = cloud_id
             return cloud_id
 
-        if self.base_url:
+        if self.base_url and is_valid_credential_value(self.base_url):
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     resp = await client.get(f"{self.base_url}/_edge/tenant_info")
@@ -198,23 +199,30 @@ class JiraConnector(BaseConnector):
         has_mcp_token = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
         has_api_token = bool(self.api_token and is_valid_credential_value(self.api_token) and self.user_email)
         is_mcp_ready = has_mcp_token or has_api_token
-        is_configured = is_mcp_ready or VAULT.is_service_authenticated("jira")
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("jira"))
+        is_configured = is_mcp_ready or is_composio_ready or VAULT.is_service_authenticated("jira")
         if self.mode == "mock" or not is_configured:
             if self.mode != "mock" and not is_configured:
                 logger.info("Jira live credentials not configured; falling back to synthetic dataset.")
             return self._search_mock(query, limit)
 
-        # Mode 1: Remote Official Atlassian Rovo Jira MCP Server
-        if self.mode == "remote_mcp" or is_mcp_ready:
+        # Mode 1: Remote Composio MCP or Official Atlassian Rovo Jira MCP Server
+        if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
             try:
                 remote_results = await self._search_remote_mcp(query, limit)
-                if remote_results:
+                if remote_results is not None and (remote_results or is_composio_ready or not (self.base_url and self.user_email and self.api_token)):
                     return remote_results
             except Exception as e:
                 logger.warning(f"Jira remote MCP search failed: {e}. Falling back to standard live/mock methods.")
+                if is_composio_ready and not (self.base_url and self.user_email and self.api_token):
+                    return []
 
         # Live Jira API implementation if URL and credentials exist
-        if self.base_url and self.user_email and self.api_token:
+        if (
+            self.base_url and is_valid_credential_value(self.base_url) and
+            self.user_email and is_valid_credential_value(self.user_email) and
+            self.api_token and is_valid_credential_value(self.api_token)
+        ):
             try:
                 headers = {"Accept": "application/json"}
                 auth = (self.user_email, self.api_token)
@@ -257,6 +265,8 @@ class JiraConnector(BaseConnector):
             except Exception as e:
                 logger.warning(f"Live Jira REST search failed: {e}. Falling back to mock dataset.")
 
+        if is_composio_ready and not (self.base_url and self.user_email and self.api_token):
+            return []
         return self._search_mock(query, limit)
 
     async def _search_remote_mcp(self, query: str, limit: int = 10) -> List[ConnectorItem]:
@@ -272,6 +282,7 @@ class JiraConnector(BaseConnector):
 
         cloud_id = await self._get_cloud_id()
         data = None
+        last_error = None
 
         # Priority 1: Official Atlassian Rovo MCP tool
         if cloud_id:
@@ -282,23 +293,27 @@ class JiraConnector(BaseConnector):
                     "maxResults": limit
                 })
             except Exception as e:
+                last_error = e
                 logger.debug(f"Official Rovo searchJiraIssuesUsingJql failed: {e}")
 
-        # Priority 2: Fallback tool names
-        if not data:
-            for tool_name in ["searchJiraIssuesUsingJql", "jira_search_issues", "search_issues", "search"]:
+        # Priority 2: Composio and standard MCP tool names
+        if data is None:
+            for tool_name in ["JIRA_SEARCH_ISSUES", "searchJiraIssuesUsingJql", "jira_search_issues", "search_issues", "search"]:
                 try:
-                    payload = {"query": query, "jql": query, "limit": limit, "maxResults": limit}
+                    payload = {"query": query, "jql": query, "limit": limit, "maxResults": limit, "max_results": limit}
                     if cloud_id:
                         payload["cloudId"] = cloud_id
                     data = await client.call_tool(tool_name, payload)
-                    if data:
+                    if data is not None:
                         break
                 except Exception as e:
+                    last_error = e
                     logger.debug(f"Jira MCP tool {tool_name} failed: {e}")
                     continue
 
-        if not data:
+        if data is None:
+            if last_error:
+                raise last_error
             return []
 
         if isinstance(data, str):
@@ -325,10 +340,37 @@ class JiraConnector(BaseConnector):
             key = issue.get("key") or issue.get("id") or f"JIRA-{idx}"
             fields = issue.get("fields", {}) if isinstance(issue.get("fields"), dict) else {}
             summary = fields.get("summary") or issue.get("summary") or issue.get("title") or "Jira Issue"
-            status = (fields.get("status", {}) if isinstance(fields.get("status"), dict) else {}).get("name") or issue.get("status", "Open")
-            priority = (fields.get("priority", {}) if isinstance(fields.get("priority"), dict) else {}).get("name") or issue.get("priority", "Medium")
-            assignee = (fields.get("assignee", {}) if isinstance(fields.get("assignee"), dict) else {}).get("emailAddress") or issue.get("assignee", "unassigned")
+            
+            # Unpack status (supports dict e.g. {"name": "In Progress"} or str)
+            raw_status = fields.get("status") if "status" in fields else issue.get("status")
+            if isinstance(raw_status, dict):
+                status = raw_status.get("name") or raw_status.get("status_category", {}).get("name") or "Open"
+            else:
+                status = raw_status or "Open"
+
+            # Unpack priority (supports dict e.g. {"name": "Medium"} or str)
+            raw_priority = fields.get("priority") if "priority" in fields else issue.get("priority")
+            if isinstance(raw_priority, dict):
+                priority = raw_priority.get("name") or "Medium"
+            else:
+                priority = raw_priority or "Medium"
+
+            # Unpack assignee
+            raw_assignee = fields.get("assignee") if "assignee" in fields else issue.get("assignee")
+            if isinstance(raw_assignee, dict):
+                assignee = raw_assignee.get("display_name") or raw_assignee.get("email_address") or raw_assignee.get("emailAddress") or "unassigned"
+            else:
+                assignee = raw_assignee or "unassigned"
+
+            # Unpack reporter / author
+            raw_reporter = fields.get("reporter") if "reporter" in fields else issue.get("reporter")
+            if isinstance(raw_reporter, dict):
+                author = raw_reporter.get("display_name") or raw_reporter.get("email_address") or raw_reporter.get("emailAddress")
+            else:
+                author = raw_reporter
+
             desc = fields.get("description") or issue.get("description") or ""
+            url = issue.get("browser_url") or issue.get("url") or f"{self.base_url or 'https://atlassian.net'}/browse/{key}"
 
             items.append(
                 ConnectorItem(
@@ -336,12 +378,12 @@ class JiraConnector(BaseConnector):
                     id=str(key),
                     title=f"[{key}] {summary}",
                     content=f"Status: {status} | Priority: {priority} | Assignee: {assignee} | Description: {desc}",
-                    url=issue.get("url") or f"{self.base_url or 'https://atlassian.net'}/browse/{key}",
-                    author=(fields.get("reporter", {}) if isinstance(fields.get("reporter"), dict) else {}).get("emailAddress") or issue.get("reporter"),
-                    created_at=fields.get("created") or issue.get("created_at"),
-                    updated_at=fields.get("updated") or issue.get("updated_at"),
+                    url=url,
+                    author=author,
+                    created_at=fields.get("created") or issue.get("created") or issue.get("created_at"),
+                    updated_at=fields.get("updated") or issue.get("updated") or issue.get("updated_at"),
                     raw_payload=issue,
-                    metadata={"status": status, "priority": priority, "assignee": assignee, "mcp": True}
+                    metadata={"status": str(status), "priority": str(priority), "assignee": str(assignee), "mcp": True}
                 )
             )
         return items[:limit]
@@ -353,12 +395,13 @@ class JiraConnector(BaseConnector):
         has_mcp_token = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
         has_api_token = bool(self.api_token and is_valid_credential_value(self.api_token) and self.user_email)
         is_mcp_ready = has_mcp_token or has_api_token
-        is_configured = is_mcp_ready or VAULT.is_service_authenticated("jira")
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("jira"))
+        is_configured = is_mcp_ready or is_composio_ready or VAULT.is_service_authenticated("jira")
         if self.mode == "mock" or not is_configured:
             return self._get_by_id_mock(item_id)
 
         # Remote MCP fetch
-        if self.mode == "remote_mcp" or is_mcp_ready:
+        if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
             try:
                 from mcp_servers.remote_client import RemoteMCPClient
                 client = RemoteMCPClient(
@@ -376,9 +419,9 @@ class JiraConnector(BaseConnector):
                         pass
 
                 if not data:
-                    for tool_name in ["getJiraIssue", "jira_get_issue", "get_issue"]:
+                    for tool_name in ["JIRA_GET_ISSUE", "getJiraIssue", "jira_get_issue", "get_issue"]:
                         try:
-                            payload = {"issue_key": item_id, "key": item_id, "id": item_id, "issueIdOrKey": item_id}
+                            payload = {"issue_key": item_id, "key": item_id, "id": item_id, "issueIdOrKey": item_id, "issue_id_or_key": item_id}
                             if cloud_id:
                                 payload["cloudId"] = cloud_id
                             data = await client.call_tool(tool_name, payload)
@@ -397,24 +440,32 @@ class JiraConnector(BaseConnector):
                         fields = data.get("fields", {}) if isinstance(data.get("fields"), dict) else {}
                         summary = fields.get("summary") or data.get("summary", "")
                         desc = fields.get("description") or data.get("description", "")
-                        status = (fields.get("status", {}) if isinstance(fields.get("status"), dict) else {}).get("name") or data.get("status")
+                        raw_status = fields.get("status") if "status" in fields else data.get("status")
+                        status = raw_status.get("name") if isinstance(raw_status, dict) else (raw_status or "Open")
+                        raw_reporter = fields.get("reporter") if "reporter" in fields else data.get("reporter")
+                        author = raw_reporter.get("display_name") or raw_reporter.get("email_address") or raw_reporter.get("emailAddress") if isinstance(raw_reporter, dict) else raw_reporter
+                        url = data.get("browser_url") or data.get("url") or f"{self.base_url or 'https://atlassian.net'}/browse/{data.get('key', item_id)}"
                         return ConnectorItem(
                             source="jira",
                             id=str(data.get("key", item_id)),
                             title=f"[{data.get('key', item_id)}] {summary}",
                             content=str(desc),
-                            url=data.get("url") or f"{self.base_url}/browse/{data.get('key', item_id)}",
-                            author=(fields.get("reporter", {}) if isinstance(fields.get("reporter"), dict) else {}).get("emailAddress") or data.get("reporter"),
-                            created_at=fields.get("created") or data.get("created"),
-                            updated_at=fields.get("updated") or data.get("updated"),
+                            url=url,
+                            author=author,
+                            created_at=fields.get("created") or data.get("created") or data.get("created_at"),
+                            updated_at=fields.get("updated") or data.get("updated") or data.get("updated_at"),
                             raw_payload=data,
-                            metadata={"status": status, "mcp": True}
+                            metadata={"status": str(status), "mcp": True}
                         )
             except Exception as e:
                 logger.debug(f"Jira MCP get_by_id failed: {e}")
 
         # Live implementation if URL and credentials configured
-        if self.base_url and self.user_email and self.api_token:
+        if (
+            self.base_url and is_valid_credential_value(self.base_url) and
+            self.user_email and is_valid_credential_value(self.user_email) and
+            self.api_token and is_valid_credential_value(self.api_token)
+        ):
             try:
                 headers = {"Accept": "application/json"}
                 auth = (self.user_email, self.api_token)
@@ -456,7 +507,8 @@ class JiraConnector(BaseConnector):
             has_mcp_token = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
             has_api_token = bool(self.api_token and is_valid_credential_value(self.api_token) and self.user_email)
             is_mcp_ready = has_mcp_token or has_api_token
-            if self.mode == "remote_mcp" or is_mcp_ready:
+            is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("jira"))
+            if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
                 try:
                     from mcp_servers.remote_client import RemoteMCPClient
                     client = RemoteMCPClient(
@@ -476,7 +528,7 @@ class JiraConnector(BaseConnector):
                             pass
 
                     if not data:
-                        for tool_name in ["createJiraIssue", "jira_create_issue", "create_issue"]:
+                        for tool_name in ["JIRA_CREATE_ISSUE", "createJiraIssue", "jira_create_issue", "create_issue"]:
                             try:
                                 mcp_params = dict(params)
                                 if cloud_id:

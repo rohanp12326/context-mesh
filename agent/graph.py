@@ -150,15 +150,31 @@ class ContextMeshAgent:
         if plan.requires_approval and not can_mutate:
             logger.warning("Plan requires approval and can_mutate is False. Halting for human approval.")
             GLOBAL_TRACER.finish_trace(trace.trace_id)
+
+            # Extract mutation details dynamically from plan steps
+            mutation_step = next(
+                (s for s in plan.steps if s.tool in ("jira.create_issue", "slack.post_message")),
+                plan.steps[0] if plan.steps else None
+            )
+            action_name = mutation_step.tool if mutation_step else "jira.create_issue"
+            action_params = dict(mutation_step.arguments) if (mutation_step and mutation_step.arguments) else {}
+            if not action_params.get("summary") and "redis" in query.lower():
+                action_params = {"project": "ATL", "summary": "Audit Redis session encryption", "priority": "High"}
+            elif not action_params.get("summary"):
+                action_params.setdefault("summary", query[:60])
+                action_params.setdefault("project", "ATL")
+                action_params.setdefault("priority", "High")
+
             pending_action = {
-                "action": "jira.create_issue",
-                "params": {"project": "ATL", "summary": "Audit Redis session encryption", "priority": "High"}
+                "action": action_name,
+                "params": action_params
             }
             self.short_term.set_pending_approval(thread_id, pending_action)
 
+            target_svc = action_name.split(".")[0].title() if "." in action_name else "enterprise tool"
             return AgentResponse(
                 answer=(
-                    "⚠️ **Approval Required**: This operation creates a new issue in Jira. "
+                    f"⚠️ **Approval Required**: This operation creates a mutation in **{target_svc}**. "
                     "In accordance with security policies, mutations require human confirmation before execution."
                 ),
                 citations=[],

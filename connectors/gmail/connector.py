@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from connectors.base import BaseConnector, ConnectorItem, PermissionScope
 from security.vault import VAULT, is_valid_credential_value
+from mcp_servers.composio_client import COMPOSIO_CLIENT
 from observability.logging import get_logger
 
 logger = get_logger("connectors.gmail")
@@ -256,8 +257,10 @@ class GmailConnector(BaseConnector):
             raise PermissionError("Access denied: missing 'read:gmail' scope")
 
         is_mcp_ready = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("gmail"))
         is_configured = bool(
             is_mcp_ready
+            or is_composio_ready
             or (self.access_token and is_valid_credential_value(self.access_token))
             or (self.account and self.app_password and is_valid_credential_value(self.app_password))
             or VAULT.is_service_authenticated("gmail")
@@ -267,11 +270,11 @@ class GmailConnector(BaseConnector):
                 logger.info("Gmail live credentials not configured; falling back to synthetic dataset.")
             return self._search_mock(query, limit)
 
-        # Mode 1: Remote Official Google Workspace MCP Server
-        if self.mode == "remote_mcp" or is_mcp_ready:
+        # Mode 1: Remote Composio MCP or Official Google Workspace MCP Server
+        if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
             try:
                 remote_results = await self._search_remote_mcp(query, limit)
-                if remote_results:
+                if remote_results or (is_composio_ready and not (self.account and self.app_password) and not self.access_token):
                     return remote_results
             except Exception as e:
                 logger.warning(f"Gmail remote MCP search failed: {e}. Falling back to standard live/mock methods.")
@@ -297,7 +300,7 @@ class GmailConnector(BaseConnector):
         return self._search_mock(query, limit)
 
     async def _search_remote_mcp(self, query: str, limit: int = 10) -> List[ConnectorItem]:
-        """Search Gmail threads via official Google Workspace MCP server."""
+        """Search Gmail threads via Composio MCP or official Google Workspace MCP server."""
         from mcp_servers.remote_client import RemoteMCPClient
 
         client = RemoteMCPClient(
@@ -308,22 +311,27 @@ class GmailConnector(BaseConnector):
         clean_q = query.replace("project = ATL", "").replace("AND", "").strip()
 
         data = None
-        for tool_name in ["search_threads", "search_messages", "search"]:
+        last_error = None
+        for tool_name in ["GMAIL_FETCH_EMAILS", "GMAIL_SEARCH_MESSAGES", "search_threads", "search_messages", "search"]:
             try:
-                data = await client.call_tool(tool_name, {"query": clean_q, "max_results": limit})
-                if data:
+                data = await client.call_tool(tool_name, {"query": clean_q, "max_results": limit, "limit": limit})
+                if data is not None:
                     break
             except Exception as e:
+                last_error = e
                 logger.debug(f"Gmail MCP tool {tool_name} with max_results failed: {e}")
                 try:
                     data = await client.call_tool(tool_name, {"query": clean_q})
-                    if data:
+                    if data is not None:
                         break
                 except Exception as e2:
+                    last_error = e2
                     logger.debug(f"Gmail MCP tool {tool_name} failed: {e2}")
                 continue
 
-        if not data:
+        if data is None:
+            if last_error:
+                raise last_error
             return []
 
         if isinstance(data, str):
@@ -336,29 +344,38 @@ class GmailConnector(BaseConnector):
         if isinstance(data, list):
             raw_items = data
         elif isinstance(data, dict):
-            raw_items = data.get("threads") or data.get("messages") or data.get("results") or [data]
+            raw_items = data.get("messages") or data.get("threads") or data.get("results") or [data]
 
         items: List[ConnectorItem] = []
         for idx, item in enumerate(raw_items):
             if not isinstance(item, dict):
                 continue
-            item_id = str(item.get("id") or f"mcp-gmail-{idx}")
-            subject = item.get("subject") or item.get("snippet", "No Subject")[:50]
-            content = item.get("snippet") or item.get("body") or json.dumps(item)
+            item_id = str(item.get("id") or item.get("threadId") or f"mcp-gmail-{idx}")
+            preview_obj = item.get("preview", {}) if isinstance(item.get("preview"), dict) else {}
+            subject = item.get("subject") or preview_obj.get("subject") or item.get("snippet", "No Subject")[:50]
+            preview_body = preview_obj.get("body", "")
+            content = preview_body or item.get("snippet") or item.get("body") or json.dumps(item)
             from_addr = item.get("from") or item.get("sender") or "Unknown"
             date_val = item.get("date") or item.get("created_at") or ""
+            if not date_val and isinstance(item.get("payload"), dict):
+                for h in item.get("payload", {}).get("headers", []):
+                    if isinstance(h, dict) and h.get("name", "").lower() == "date":
+                        date_val = h.get("value", "")
+                        break
+            clean_thread_id = item.get("threadId") or item.get("id") or item_id
+            url = item.get("url") or f"https://mail.google.com/mail/u/0/#inbox/{clean_thread_id}"
             items.append(
                 ConnectorItem(
                     source="gmail",
                     id=f"gmail-{item_id}" if not item_id.startswith("gmail-") else item_id,
                     title=f"Email: {subject}",
                     content=str(content),
-                    url=item.get("url") or f"https://mail.google.com/mail/u/0/#inbox/{item_id}",
+                    url=url,
                     author=from_addr,
                     created_at=date_val,
                     updated_at=date_val,
                     raw_payload=item,
-                    metadata={"from": from_addr, "subject": subject, "date": date_val, "mcp": True}
+                    metadata={"from": from_addr, "to": item.get("to"), "subject": subject, "date": date_val, "mcp": True}
                 )
             )
         return items[:limit]
@@ -502,8 +519,10 @@ class GmailConnector(BaseConnector):
             raise PermissionError("Access denied: missing 'read:gmail' scope")
 
         is_mcp_ready = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("gmail"))
         is_configured = bool(
             is_mcp_ready
+            or is_composio_ready
             or (self.access_token and is_valid_credential_value(self.access_token))
             or (self.account and self.app_password and is_valid_credential_value(self.app_password))
             or VAULT.is_service_authenticated("gmail")
@@ -513,7 +532,7 @@ class GmailConnector(BaseConnector):
 
         # Live fetch single thread
         clean_id = item_id.replace("gmail-", "")
-        if self.mode == "remote_mcp" or is_mcp_ready:
+        if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
             try:
                 from mcp_servers.remote_client import RemoteMCPClient
                 client = RemoteMCPClient(
@@ -521,10 +540,10 @@ class GmailConnector(BaseConnector):
                     endpoint_url=self.mcp_endpoint,
                     auth_token=self.mcp_token or self.access_token,
                 )
-                for tool_name in ["get_thread", "get_message"]:
+                for tool_name in ["GMAIL_GET_THREAD", "GMAIL_GET_MESSAGE", "get_thread", "get_message"]:
                     try:
                         try:
-                            data = await client.call_tool(tool_name, {"thread_id": clean_id})
+                            data = await client.call_tool(tool_name, {"thread_id": clean_id, "id": clean_id})
                         except Exception:
                             data = await client.call_tool(tool_name, {"id": clean_id})
                         if data:
@@ -534,17 +553,22 @@ class GmailConnector(BaseConnector):
                                 except Exception:
                                     pass
                             if isinstance(data, dict):
-                                subject = data.get("subject", "No Subject")
+                                preview_obj = data.get("preview", {}) if isinstance(data.get("preview"), dict) else {}
+                                subject = data.get("subject") or preview_obj.get("subject") or "No Subject"
+                                preview_body = preview_obj.get("body", "")
+                                content = preview_body or data.get("snippet") or data.get("body") or json.dumps(data)
+                                from_addr = data.get("from") or data.get("sender") or "Unknown"
+                                date_val = data.get("date") or data.get("created_at") or ""
                                 return ConnectorItem(
                                     source="gmail",
                                     id=f"gmail-{clean_id}",
                                     title=f"Email: {subject}",
-                                    content=data.get("snippet", data.get("body", "")),
+                                    content=str(content),
                                     url=f"https://mail.google.com/mail/u/0/#inbox/{clean_id}",
-                                    author=data.get("from", "Unknown"),
-                                    created_at=data.get("date"),
+                                    author=from_addr,
+                                    created_at=date_val,
                                     raw_payload=data,
-                                    metadata={"from": data.get("from"), "subject": subject, "mcp": True}
+                                    metadata={"from": from_addr, "subject": subject, "mcp": True}
                                 )
                     except Exception:
                         continue

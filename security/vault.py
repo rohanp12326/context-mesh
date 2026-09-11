@@ -138,10 +138,90 @@ class CredentialVault:
             return True
         return False
 
+    def sync_composio_connections(self, active_accounts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, bool]:
+        """Sync live connected account statuses from Composio to the local vault."""
+        store = self._read_all()
+        active_slugs = set()
+        active_acc_map = {}
+        if active_accounts is None:
+            try:
+                from mcp_servers.composio_client import ComposioMCPClient
+                client = ComposioMCPClient()
+                if client.is_configured():
+                    accounts = client.list_connected_accounts_sync()
+                    for a in accounts:
+                        if str(a.get("status", "")).upper() == "ACTIVE":
+                            tk = a.get("toolkit")
+                            slug = tk.get("slug") if isinstance(tk, dict) else tk
+                            if not slug:
+                                app = a.get("app")
+                                slug = app.get("slug") if isinstance(app, dict) else app
+                            if slug:
+                                s = str(slug).lower().strip()
+                                active_slugs.add(s)
+                                active_acc_map[s] = a.get("id") or a.get("nanoid")
+            except Exception:
+                pass
+        else:
+            for a in active_accounts:
+                if str(a.get("status", "")).upper() == "ACTIVE":
+                    tk = a.get("toolkit")
+                    slug = tk.get("slug") if isinstance(tk, dict) else tk
+                    if not slug:
+                        app = a.get("app")
+                        slug = app.get("slug") if isinstance(app, dict) else app
+                    if slug:
+                        s = str(slug).lower().strip()
+                        active_slugs.add(s)
+                        active_acc_map[s] = a.get("id") or a.get("nanoid")
+
+        results = {}
+        service_modes = store.setdefault("service_modes", {})
+        for svc in ["jira", "slack", "gmail"]:
+            creds = store.setdefault(svc, {})
+            if svc in active_slugs:
+                creds["composio_connected"] = True
+                creds["auth_type"] = "composio"
+                if svc in active_acc_map and active_acc_map[svc]:
+                    creds["composio_account_id"] = str(active_acc_map[svc])
+                service_modes[svc] = "live"
+                results[svc] = True
+            else:
+                if creds.get("composio_connected") and active_slugs:
+                    creds["composio_connected"] = False
+                results[svc] = bool(creds.get("composio_connected"))
+        self._write_all(store)
+        return results
+
+    def is_composio_connected(self, service: str) -> bool:
+        """Check if a service is authenticated specifically via Composio."""
+        creds = self.get_credential(service)
+        composio_creds = self.get_credential("composio")
+        composio_key = composio_creds.get("api_key") or os.getenv("COMPOSIO_API_KEY", "")
+        if not is_valid_credential_value(composio_key):
+            return False
+        return bool(
+            creds.get("composio_connected")
+            or creds.get("composio_account_id")
+            or creds.get("auth_type") == "composio"
+        )
+
     def is_service_authenticated(self, service: str) -> bool:
         """Check if a service has valid, non-placeholder credentials configured."""
         creds = self.get_credential(service)
+        composio_creds = self.get_credential("composio")
+        composio_key = composio_creds.get("api_key") or os.getenv("COMPOSIO_API_KEY", "")
+        has_composio = is_valid_credential_value(composio_key)
+
+        if service == "composio":
+            return has_composio
+
         if service == "jira":
+            # Check Composio connected status
+            if creds.get("composio_connected") or creds.get("composio_account_id"):
+                return True
+            if has_composio and creds.get("auth_type") == "composio":
+                return True
             if is_valid_credential_value(creds.get("mcp_token") or os.getenv("ATLASSIAN_MCP_TOKEN", "")):
                 return True
             url = creds.get("base_url") or os.getenv("JIRA_URL") or os.getenv("JIRA_BASE_URL", "")
@@ -153,11 +233,21 @@ class CredentialVault:
                 and is_valid_credential_value(token)
             )
         elif service == "slack":
+            # Check Composio connected status
+            if creds.get("composio_connected") or creds.get("composio_account_id"):
+                return True
+            if has_composio and creds.get("auth_type") == "composio":
+                return True
             if is_valid_credential_value(creds.get("mcp_token") or os.getenv("SLACK_MCP_TOKEN", "")):
                 return True
             token = creds.get("bot_token") or creds.get("user_token") or creds.get("api_key") or os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_USER_TOKEN") or os.getenv("SLACK_TOKEN", "")
             return is_valid_credential_value(token)
         elif service == "gmail":
+            # Check Composio connected status
+            if creds.get("composio_connected") or creds.get("composio_account_id"):
+                return True
+            if has_composio and creds.get("auth_type") == "composio":
+                return True
             if is_valid_credential_value(creds.get("mcp_token") or os.getenv("GMAIL_MCP_TOKEN", "")):
                 return True
             # Check for App Password mode or OAuth token mode
@@ -233,14 +323,23 @@ class CredentialVault:
         jira_data = store.get("jira", {})
         slack_data = store.get("slack", {})
         gmail_data = store.get("gmail", {})
+        composio_data = store.get("composio", {})
 
         zai_key = zai_data.get("api_key") or os.getenv("ZAI_API_KEY", "")
         jira_token = jira_data.get("api_token") or os.getenv("JIRA_API_TOKEN", "")
         slack_token = slack_data.get("bot_token") or slack_data.get("user_token") or slack_data.get("api_key") or os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_USER_TOKEN") or os.getenv("SLACK_TOKEN", "")
+        composio_key = composio_data.get("api_key") or os.getenv("COMPOSIO_API_KEY", "")
 
         return {
             "mode": mode,
             "services": {
+                "composio": {
+                    "is_configured": self.is_service_authenticated("composio"),
+                    "mode": self.get_service_mode("composio"),
+                    "user_id": composio_data.get("user_id", os.getenv("COMPOSIO_USER_ID", "default_user")),
+                    "base_url": composio_data.get("base_url", os.getenv("COMPOSIO_BASE_URL", "https://backend.composio.dev/api/v3.1")),
+                    "masked_key": mask_secret(composio_key),
+                },
                 "zai": {
                     "is_configured": self.is_service_authenticated("zai"),
                     "mode": self.get_service_mode("zai"),
@@ -254,17 +353,22 @@ class CredentialVault:
                     "base_url": jira_data.get("base_url", os.getenv("JIRA_BASE_URL", "")),
                     "user_email": jira_data.get("user_email", os.getenv("JIRA_USER_EMAIL", "")),
                     "masked_token": mask_secret(jira_token),
+                    "auth_type": "composio" if (jira_data.get("composio_connected") or jira_data.get("auth_type") == "composio") else "token",
+                    "composio_connected": bool(jira_data.get("composio_connected")),
                 },
                 "slack": {
                     "is_configured": self.is_service_authenticated("slack"),
                     "mode": self.get_service_mode("slack"),
                     "masked_token": mask_secret(slack_token),
+                    "auth_type": "composio" if (slack_data.get("composio_connected") or slack_data.get("auth_type") == "composio") else "token",
+                    "composio_connected": bool(slack_data.get("composio_connected")),
                 },
                 "gmail": {
                     "is_configured": self.is_service_authenticated("gmail"),
                     "mode": self.get_service_mode("gmail"),
                     "account": gmail_data.get("account", os.getenv("GMAIL_ACCOUNT", "Not Connected")),
-                    "auth_type": "app_password" if gmail_data.get("app_password") else ("oauth" if gmail_data.get("access_token") else "none"),
+                    "auth_type": "composio" if (gmail_data.get("composio_connected") or gmail_data.get("auth_type") == "composio") else ("app_password" if gmail_data.get("app_password") else ("oauth" if gmail_data.get("access_token") else "none")),
+                    "composio_connected": bool(gmail_data.get("composio_connected")),
                 }
             }
         }

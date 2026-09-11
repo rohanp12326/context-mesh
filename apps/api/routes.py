@@ -127,7 +127,7 @@ async def get_integrations_status():
 @router.post("/integrations/configure")
 async def configure_integration(req: IntegrationConfigureRequest):
     """Save credentials securely into encrypted vault."""
-    if req.service not in ["zai", "jira", "slack", "gmail", "system_config"]:
+    if req.service not in ["zai", "jira", "slack", "gmail", "composio", "system_config"]:
         raise HTTPException(status_code=400, detail=f"Unsupported service '{req.service}'")
     VAULT.set_credential(req.service, req.credentials)
     return {"status": "saved", "service": req.service, "vault_status": VAULT.get_status()}
@@ -137,7 +137,13 @@ async def configure_integration(req: IntegrationConfigureRequest):
 async def test_integration(req: IntegrationTestRequest):
     """Test third-party connection without modifying vault."""
     creds = req.credentials
-    if req.service == "zai":
+    if req.service == "composio":
+        from security.connection_testers import test_composio_connection
+        ok, msg, lat = await test_composio_connection(
+            api_key=creds.get("api_key", ""),
+            base_url=creds.get("base_url", "https://backend.composio.dev/api/v3.1")
+        )
+    elif req.service == "zai":
         ok, msg, lat = await test_zai_connection(
             api_key=creds.get("api_key", ""),
             base_url=creds.get("base_url", "https://open.bigmodel.cn/api/paas/v4/"),
@@ -159,8 +165,37 @@ async def test_integration(req: IntegrationTestRequest):
             access_token=creds.get("access_token", "")
         )
     else:
-
         raise HTTPException(status_code=400, detail=f"Unknown service '{req.service}'")
 
     return {"service": req.service, "success": ok, "message": msg, "latency_ms": lat}
+
+
+@router.post("/auth/composio/link")
+async def get_composio_link(req: ComposioLinkRequest):
+    """Generate 1-click OAuth Connect Link via Composio for Jira, Slack, or Gmail."""
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    try:
+        url = await COMPOSIO_CLIENT.get_auth_url(
+            toolkit=req.toolkit,
+            user_id=req.user_id,
+            callback_url=req.callback_url
+        )
+        return {"success": True, "toolkit": req.toolkit, "redirect_url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/auth/composio/status")
+async def get_composio_status(user_id: str = "default_user", toolkit: Optional[str] = None):
+    """Check connected accounts status via Composio."""
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    try:
+        if toolkit:
+            is_active, acc_id = await COMPOSIO_CLIENT.check_connection_status(toolkit, user_id=user_id)
+            return {"user_id": user_id, "toolkit": toolkit, "is_active": is_active, "account_id": acc_id}
+        accounts = await COMPOSIO_CLIENT.list_connected_accounts(user_id=user_id)
+        return {"user_id": user_id, "accounts": accounts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
