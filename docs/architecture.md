@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-**ContextMesh** is an enterprise AI engineering intelligence assistant designed to resolve cross-system questions spanning Jira, Notion, and Gmail. Instead of naive vector search over chunked documents, ContextMesh relies on **typed query decomposition**, **parallel tool retrieval via Model Context Protocol (MCP)**, **evidence normalization & freshness resolution**, **tiered memory**, and **approval-gated writes**.
+**ContextMesh** is an enterprise AI engineering intelligence assistant designed to resolve cross-system questions spanning Jira, Slack, and Gmail. Instead of naive vector search over chunked documents, ContextMesh relies on **typed query decomposition**, **parallel tool retrieval via Model Context Protocol (MCP)**, **evidence normalization & freshness resolution**, **tiered memory**, and **approval-gated writes**.
 
 ```text
 User / Streamlit UI / API
@@ -21,7 +21,7 @@ User / Streamlit UI / API
           v
  Parallel MCP Tool Execution
     ├── Jira MCP Server  ──> JQL issue search & blocker checks
-    ├── Notion MCP Server ──> Page, spec, & meeting note retrieval
+    ├── Slack MCP Server ──> Channel messages, canvases, & thread discussions
     └── Gmail MCP Server ──> Email thread & commitment extraction
           |
           v
@@ -47,7 +47,7 @@ User / Streamlit UI / API
 
 ### 2.1 Model Context Protocol (MCP) Integration
 - Standardized tool boundaries decoupling connectors from the agent core.
-- Read operations (`jira.search_issues`, `notion.search_pages`, `gmail.search_messages`) run in parallel via `asyncio.gather`.
+- Read operations (`jira.search_issues`, `slack.search_messages`, `gmail.search_messages`) run in parallel via `asyncio.gather`.
 - Mutation operations (`jira.create_issue`) are flagged with `requires_approval = True`.
 
 ### 2.2 Tiered Memory Subsystem
@@ -62,9 +62,9 @@ User / Streamlit UI / API
 
 ### 2.3 Evidence Normalization & Freshness
 Every piece of retrieved data is normalized into canonical `Evidence`:
-- `source`: `"jira" | "notion" | "gmail" | "memory"`
+- `source`: `"jira" | "slack" | "gmail" | "memory"`
 - `source_object_id`: e.g. `ATL-101`, `gmail-th-01`
 - `source_url`: Clickable reference
 - `content_hash`: Sha256 integrity hash
 - `updated_at` / `fetched_at`: Timestamps used to compute freshness labels (`Live (<24h)`, `Recent`, `Potentially Stale`).
-- **Contradiction Engine**: Identifies discrepancies (e.g. Notion target release date vs Gmail delay announcements).
+- **Contradiction Engine**: Identifies discrepancies (e.g. Slack target release spec vs Gmail delay announcements).

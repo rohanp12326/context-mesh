@@ -6,7 +6,7 @@ Cross-tool enterprise AI agents frequently suffer from fragile connector couplin
 ## Decisions
 
 ### 1. Adopt Model Context Protocol (MCP)
-- **Decision**: Wrap Jira, Notion, and Gmail integrations behind standard MCP tool definitions.
+- **Decision**: Wrap Jira, Slack, and Gmail integrations behind standard MCP tool definitions.
 - **Rationale**: Decouples the planner from specific API client nuances. Connectors can be replaced, upgraded, or mocked without altering the agent planning and synthesis graphs.
 
 ### 2. Tiered Memory (Short-Term Checkpointer + Long-Term Structured Store)

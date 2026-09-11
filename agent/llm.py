@@ -185,14 +185,14 @@ class ZAIClient:
                         "arguments": {"query": "Atlas", "limit": 10}
                     })
 
-            if "notion" in target_apps:
-                notion_query = "Atlas launch plan spec" if ("spec" in q_lower or "plan" in q_lower) else ("open tasks action items" if "task" in q_lower else ("Atlas" if "atlas" in q_lower else ""))
+            if "slack" in target_apps:
+                slack_query = "Atlas launch plan spec" if ("spec" in q_lower or "plan" in q_lower) else ("open tasks action items" if "task" in q_lower else ("Atlas" if "atlas" in q_lower else ""))
                 steps.append({
                     "id": f"s{len(steps)+1}",
-                    "tool": "notion.search_pages",
-                    "query": notion_query,
-                    "purpose": "Find release requirements and architecture specs",
-                    "arguments": {"query": notion_query, "limit": 5}
+                    "tool": "slack.search_messages",
+                    "query": slack_query,
+                    "purpose": "Find release requirements, discussions, and canvases",
+                    "arguments": {"query": slack_query, "limit": 5}
                 })
 
             if "gmail" in target_apps:

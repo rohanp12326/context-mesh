@@ -7,7 +7,7 @@ from mcp_servers.remote_client import RemoteMCPClient, OFFICIAL_MCP_ENDPOINTS
 from security.connection_testers import verify_mcp_connection
 from connectors.gmail.connector import GmailConnector
 from connectors.jira.connector import JiraConnector
-from connectors.notion.connector import NotionConnector
+from connectors.slack.connector import SlackConnector
 from connectors.base import PermissionScope
 
 
@@ -30,9 +30,9 @@ def test_remote_mcp_client_init_and_headers():
     expected_basic = "Basic " + base64.b64encode(b"dev@enterprise.com:ATATT3xFf...").decode("utf-8")
     assert client_jira_basic.headers["Authorization"] == expected_basic
 
-    client_notion = RemoteMCPClient("notion", auth_token="ntn-token")
-    assert client_notion.endpoint_url == OFFICIAL_MCP_ENDPOINTS["notion"]
-    assert client_notion.headers["Authorization"] == "Bearer ntn-token"
+    client_slack = RemoteMCPClient("slack", auth_token="xoxb-slack-token")
+    assert client_slack.endpoint_url == OFFICIAL_MCP_ENDPOINTS["slack"]
+    assert client_slack.headers["Authorization"] == "Bearer xoxb-slack-token"
 
     # Custom endpoint
     client_custom = RemoteMCPClient("jira", endpoint_url="https://custom.mcp/v1")
@@ -166,35 +166,36 @@ async def test_jira_connector_remote_mcp_search_and_mutate():
 
 
 @pytest.mark.asyncio
-async def test_notion_connector_remote_mcp_search():
-    """Verify Notion connector searches pages via remote hosted MCP."""
-    mock_pages = {
-        "pages": [
+async def test_slack_connector_remote_mcp_search():
+    """Verify Slack connector searches messages via remote hosted MCP."""
+    mock_messages = {
+        "messages": [
             {
-                "id": "notion-uuid-789",
-                "title": "Architecture Decision Record: MCP",
-                "content": "Decided to adopt official cloud MCP servers.",
-                "author": "Arch Team",
-                "last_edited_time": "2026-09-09T14:00:00Z"
+                "id": "slack-msg-789",
+                "text": "Architecture Decision Record: MCP for Slack adopted.",
+                "author": "sarah",
+                "created_at": "2026-09-09T14:00:00Z",
+                "channel": "proj-atlas-release",
+                "url": "https://slack.com/archives/C123/p789"
             }
         ]
     }
 
-    connector = NotionConnector(
+    connector = SlackConnector(
         mode="remote_mcp",
-        mcp_token="valid-notion-token-456",
-        mcp_endpoint="https://mcp.notion.com/mcp"
+        mcp_token="xoxb-valid-slack-token-456",
+        mcp_endpoint="https://mcp.slack.com/mcp"
     )
 
     with patch.object(RemoteMCPClient, "call_tool", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = mock_pages
+        mock_call.return_value = mock_messages
         results = await connector.search("Architecture", limit=5)
 
         assert len(results) == 1
         item = results[0]
-        assert item.source == "notion"
-        assert item.id == "notion-uuid-789"
-        assert "Architecture Decision Record: MCP" in item.title
+        assert item.source == "slack"
+        assert item.id == "slack-msg-789"
+        assert "Architecture Decision Record" in item.content
         assert item.metadata.get("mcp") is True
 
 

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 class PermissionScope(BaseModel):
     """Permission and authorization boundary for tool access."""
     user_id: str = "default_user"
-    allowed_scopes: List[str] = Field(default_factory=lambda: ["read:jira", "read:notion", "read:gmail"])
+    allowed_scopes: List[str] = Field(default_factory=lambda: ["read:jira", "read:slack", "read:gmail"])
     can_mutate: bool = False
 
 

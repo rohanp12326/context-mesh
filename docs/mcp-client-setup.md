@@ -2,7 +2,7 @@
 
 This guide explains how to connect external MCP clients (such as **Claude Desktop**, **Cursor IDE**, **Windsurf**, or **VS Code Cline/Roo**) to ContextMesh.
 
-ContextMesh implements standard Model Context Protocol (MCP) servers over **`stdio`** (standard subprocess transport) and **`sse`** (Server-Sent Events / HTTP transport), exposing both low-level enterprise tools (Jira, Notion, Gmail) and the high-level cross-system reasoning agent (`contextmesh_query`).
+ContextMesh implements standard Model Context Protocol (MCP) servers over **`stdio`** (standard subprocess transport) and **`sse`** (Server-Sent Events / HTTP transport), exposing both low-level enterprise tools (Jira, Slack, Gmail) and the high-level cross-system reasoning agent (`contextmesh_query`).
 
 ---
 
@@ -12,12 +12,13 @@ When connected to ContextMesh, your MCP client gains access to the following too
 
 | Tool Name | Parameters | Description |
 |---|---|---|
-| `contextmesh_query` | `query: str`, `user_id: str` | **Full cross-tool agent**: Decomposes inquiries, queries Jira/Notion/Gmail concurrently, detects contradictions, and synthesizes cited answers. |
+| `contextmesh_query` | `query: str`, `user_id: str` | **Full cross-tool agent**: Decomposes inquiries, queries Jira/Slack/Gmail concurrently, detects contradictions, and synthesizes cited answers. |
 | `jira_search_issues` | `query: str`, `limit: int` | Search Jira issues using JQL syntax or search terms (e.g. `project = ATL AND statusCategory != Done`). |
 | `jira_get_issue` | `issue_key: str` | Fetch complete details and blocker status for an issue (e.g. `ATL-101`). |
 | `jira_create_issue` | `project: str`, `summary: str`, `description: str`, `priority: str` | Create a new issue/task in Jira (requires approval/token). |
-| `notion_search_pages` | `query: str`, `limit: int` | Search Notion pages, architecture specifications, runbooks, and meeting notes. |
-| `notion_get_page_content` | `page_id: str` | Fetch markdown content of a specific Notion document by ID. |
+| `slack_search_messages` | `query: str`, `limit: int` | Search Slack messages, channels, and canvases for release coordination and discussion. |
+| `slack_get_thread` | `channel: str`, `thread_ts: str` | Fetch all replies in a Slack thread by timestamp. |
+| `slack_post_message` | `channel: str`, `text: str` | Post a message to a Slack channel (requires approval). |
 | `gmail_search_messages` | `query: str`, `limit: int` | Search email threads and messages for stakeholder commitments and discussions. |
 | `gmail_get_thread` | `thread_id: str` | Fetch all messages in a specific email thread by thread ID. |
 
@@ -45,7 +46,7 @@ When connected to ContextMesh, your MCP client gains access to the following too
         "JIRA_URL": "https://your-company.atlassian.net",
         "JIRA_EMAIL": "your-email@company.com",
         "JIRA_API_TOKEN": "your_jira_api_token",
-        "NOTION_API_KEY": "ntn_your_notion_secret",
+        "SLACK_BOT_TOKEN": "xoxb-your-slack-token",
         "ZAI_API_KEY": "your_zai_glm_api_key",
         "CONNECTOR_MODE": "live"
       }
@@ -103,7 +104,7 @@ For VS Code extensions supporting MCP:
 
 ---
 
-## 3. Official Provider MCP Servers (Google, Atlassian & Notion)
+## 3. Official Provider MCP Servers (Google, Atlassian & Slack)
 
 Each major enterprise SaaS provider now offers official, first-party Model Context Protocol (MCP) servers:
 
@@ -113,7 +114,7 @@ Each major enterprise SaaS provider now offers official, first-party Model Conte
 |---|---|---|---|---|---|
 | **Google** | `https://gmailmcp.googleapis.com/mcp/v1` | [Gmail MCP Reference](https://developers.google.com/workspace/gmail/api/reference/mcp) | **Bearer Auth**<br>`Authorization: Bearer <token>` | Google Cloud OAuth 2.0 Access Token (`ya29...`) with `gmail.readonly` or `gmail.compose` scope | ⚠️ **Google App Passwords (16 chars) DO NOT WORK** with `gmailmcp.googleapis.com`. App Passwords are strictly for IMAP (`imap.gmail.com`). |
 | **Atlassian** | `https://mcp.atlassian.com/v2/mcp` | [Atlassian Rovo MCP](https://support.atlassian.com/atlassian-intelligence/docs/connect-rovo-to-model-context-protocol/) | **OAuth 2.1**: `Authorization: Bearer <token>`<br>**Basic Auth (API Token)**: `Authorization: Basic base64(email:token)` | Atlassian OAuth 2.1 token OR Personal API Token (`ATATT...`) with user email | ⚠️ Atlassian Org Admin must enable **"Allow API token authentication"** in *Atlassian Admin > Rovo > Rovo MCP server > Authentication*. Without this, API tokens will fail. |
-| **Notion** | `https://mcp.notion.com/mcp` | [Notion MCP Docs](https://developers.notion.com/) | **OAuth 2.0 PKCE**<br>`Authorization: Bearer <token>` | Notion OAuth 2.0 access token | ⚠️ **Internal Integration Secrets (`ntn_...`) DO NOT WORK** directly with `mcp.notion.com/mcp` (returns 401). Internal secrets work with Notion's REST API or local stdio `@modelcontextprotocol/server-notion`. |
+| **Slack** | `https://mcp.slack.com/mcp` | [Slack MCP Docs](https://docs.slack.dev/ai/slack-mcp-server/) | **Bearer Auth (JSON-RPC 2.0)**<br>`Authorization: Bearer <token>` | Slack Bot token (`xoxb-...`), User token (`xoxp-...`), or OAuth Bearer token | Operates over Streamable HTTP (not SSE). Exposes `slack.search_messages`, `slack.get_thread`, and `slack.post_message`. |
 
 ---
 
@@ -122,16 +123,16 @@ Each major enterprise SaaS provider now offers official, first-party Model Conte
 - **Single-App Official Servers**:
   - Hosted directly in the provider's cloud.
   - Excellent for interacting with one platform in isolation (e.g. asking Claude to search Jira or search Gmail).
-  - **Limitations**: Each server operates in a silo. They cannot detect cross-system discrepancies (e.g., Jira showing a delayed launch date that conflicts with a Notion spec or an email sign-off).
+  - **Limitations**: Each server operates in a silo. They cannot detect cross-system discrepancies (e.g., Jira showing a delayed launch date that conflicts with a Slack release spec or an email sign-off).
 - **ContextMesh Unified Mesh (`context-mesh`)**:
-  - Acts as the **orchestrator and synthesis layer** across Jira, Notion, and Gmail.
+  - Acts as the **orchestrator and synthesis layer** across Jira, Slack, and Gmail.
   - Automatically decomposes queries, retrieves evidence across all three systems in parallel, detects temporal contradictions, calculates SHA-256 evidence integrity hashes, and generates grounded bracket citations.
 
 ---
 
 ### 3.3 Connecting Claude Desktop to All Official MCP Servers
 
-You can connect Claude Desktop simultaneously to Google Gmail, Atlassian Jira, Notion, and ContextMesh in `claude_desktop_config.json`:
+You can connect Claude Desktop simultaneously to Google Gmail, Atlassian Jira, Slack, and ContextMesh in `claude_desktop_config.json`:
 
 ```json
 {
@@ -146,8 +147,8 @@ You can connect Claude Desktop simultaneously to Google Gmail, Atlassian Jira, N
     "atlassian-jira": {
       "url": "https://mcp.atlassian.com/v2/mcp"
     },
-    "notion": {
-      "url": "https://mcp.notion.com/mcp"
+    "slack": {
+      "url": "https://mcp.slack.com/mcp"
     },
     "context-mesh": {
       "command": "/path/to/context-mesh/.venv/bin/python",
@@ -163,7 +164,7 @@ You can connect Claude Desktop simultaneously to Google Gmail, Atlassian Jira, N
 When Claude Desktop launches:
 - **Google Gmail**: Prompts to sign in via Google Cloud OAuth.
 - **Atlassian Jira**: Prompts to sign in via Atlassian Cloud OAuth 2.1.
-- **Notion**: Prompts to authorize your Notion workspace.
+- **Slack**: Prompts to authorize your Slack workspace.
 - **ContextMesh**: Runs locally via `stdio` to provide cross-tool reasoning and offline demo testing.
 
 ---
@@ -208,5 +209,5 @@ Configure your remote client to connect to `http://<host>:8000/sse`.
 #### Q: How does ContextMesh know when to query apps?
 - ContextMesh uses an **App Determination Engine** (`agent.router.AppRouter`):
   - Email queries (*"what are my recent mails"*) -> Gmail only.
-  - Task queries (*"what are my opened tasks"*) -> Jira + Notion.
+  - Task queries (*"what are my opened tasks"*) -> Jira + Slack.
   - General queries (*"who is the president of america"*, *"how to setup windows 11"*) -> Answered directly with 0 tool calls.

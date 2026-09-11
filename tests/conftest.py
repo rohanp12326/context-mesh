@@ -3,7 +3,7 @@
 import os
 import pytest
 from connectors.jira.connector import JiraConnector
-from connectors.notion.connector import NotionConnector
+from connectors.slack.connector import SlackConnector
 from connectors.gmail.connector import GmailConnector
 from mcp_servers.registry import MCPToolRegistry
 from memory.short_term import ShortTermMemoryStore
@@ -22,8 +22,8 @@ def jira_connector(synthetic_path):
 
 
 @pytest.fixture
-def notion_connector(synthetic_path):
-    return NotionConnector(mode="mock", synthetic_data_path=synthetic_path)
+def slack_connector(synthetic_path):
+    return SlackConnector(mode="mock", synthetic_data_path=synthetic_path)
 
 
 @pytest.fixture

@@ -11,14 +11,15 @@ from memory.long_term import LongTermMemoryStore
 
 
 PLANNER_SYSTEM_PROMPT = """You are the Lead Query Planner for ContextMesh, an AI engineering intelligence assistant.
-Your goal is to decompose the user's question into an optimal, typed execution plan using Jira, Notion, and Gmail tools.
+Your goal is to decompose the user's question into an optimal, typed execution plan using Jira, Slack, and Gmail tools.
 
 Available Tools:
 - jira.search_issues(query: str, limit: int): Search issues by JQL (e.g. 'project = ATL AND statusCategory != Done') or keyword.
 - jira.get_issue(issue_key: str): Fetch specific Jira issue details.
 - jira.create_issue(project: str, summary: str, description: str, priority: str): Create Jira issue (MUTATION - requires approval).
-- notion.search_pages(query: str, limit: int): Search Notion specs, meeting notes, runbooks.
-- notion.get_page_content(page_id: str): Fetch full Notion page.
+- slack.search_messages(query: str, limit: int): Search Slack messages, channels, discussions, and canvases.
+- slack.get_thread(thread_id: str): Fetch full Slack thread messages.
+- slack.post_message(channel: str, text: str): Post message to a Slack channel (MUTATION - requires approval).
 - gmail.search_messages(query: str, limit: int): Search email threads (e.g. 'subject/commitments newer_than:30d').
 - gmail.get_thread(thread_id: str): Fetch full thread messages.
 
@@ -26,9 +27,9 @@ Tool Selection & Routing Rules:
 1. Zero-Tool Queries: If the query is general knowledge (e.g. "who is the president of america", "how to setup windows 11"), programming trivia, or conversational chit-chat, set "user_intent": "direct_answer" and "steps": []. Do NOT call enterprise tools.
 2. Email Queries: If the query asks about emails, mails, or inbox messages (e.g. "what are my recent mails"), select ONLY Gmail tools.
 3. Closed Task & Ticket Queries: If the query asks about closed tasks, done tasks, resolved issues, tickets, bugs, or blockers (e.g. "what are my closed tasks", "show completed issues"), select ONLY Jira tools. Jira is the definitive source of truth for task statuses and resolutions. Use JQL: statusCategory = Done or status in (Done, Closed).
-4. Opened Tasks & Action Items: If the query asks about open tasks or action items in notes (e.g. "what are my opened tasks"), select Jira and Notion tools.
+4. Opened Tasks & Action Items: If the query asks about open tasks or action items in notes or chats (e.g. "what are my opened tasks"), select Jira and Slack tools.
 5. Issue/Ticket Queries: If the query asks about Jira issues, tickets, bugs, or blockers, select ONLY Jira tools.
-6. Documentation Queries: If the query asks about runbooks, specs, or meeting notes, select ONLY Notion tools.
+6. Documentation & Channel Queries: If the query asks about runbooks, specs, canvases, or Slack discussions, select ONLY Slack tools.
 7. Cross-Tool Queries: Select multiple tools ONLY when the inquiry requires cross-system correlation.
 
 Output strictly valid JSON matching this schema:
@@ -66,7 +67,8 @@ class QueryPlanner:
                 if r.type == "project_alias":
                     resolved["project"] = "Atlas"
                     resolved["jira_project"] = r.content.get("jira_project", "ATL")
-                    resolved["notion_spec_id"] = r.content.get("notion_spec_id", "")
+                    resolved["slack_channel"] = r.content.get("slack_channel", "proj-atlas-release")
+                    resolved["slack_canvas_id"] = r.content.get("slack_canvas_id", "slack-atlas-spec")
 
         # Check for people
         if "priya" in query.lower():
@@ -137,8 +139,8 @@ Generate the query execution plan in strict JSON.
                 steps = [s for s in steps if s.tool.startswith("jira.")]
             elif len(target_apps) == 1 and target_apps[0] == "gmail":
                 steps = [s for s in steps if s.tool.startswith("gmail.")]
-            elif len(target_apps) == 1 and target_apps[0] == "notion":
-                steps = [s for s in steps if s.tool.startswith("notion.")]
+            elif len(target_apps) == 1 and target_apps[0] == "slack":
+                steps = [s for s in steps if s.tool.startswith("slack.")]
 
             # Enforce project key from memory if resolved
             if "project" in entities or "atlas" in user_query.lower():
@@ -180,15 +182,15 @@ Generate the query execution plan in strict JSON.
                         arguments={"query": j_q, "limit": 10}
                     )
                 )
-            if "notion" in target_apps:
-                n_q = "Atlas" if "atlas" in q_low else ""
+            if "slack" in target_apps:
+                s_q = "Atlas launch plan spec" if ("spec" in q_low or "plan" in q_low) else ("open tasks action items" if "task" in q_low else ("Atlas" if "atlas" in q_low else ""))
                 fallback_steps.append(
                     PlanStep(
                         id=f"s{len(fallback_steps)+1}",
-                        tool="notion.search_pages",
-                        query=n_q,
-                        purpose="Search related Notion documentation",
-                        arguments={"query": n_q, "limit": 5}
+                        tool="slack.search_messages",
+                        query=s_q,
+                        purpose="Search related Slack communications and canvases",
+                        arguments={"query": s_q, "limit": 5}
                     )
                 )
             if "gmail" in target_apps:

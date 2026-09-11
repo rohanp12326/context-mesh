@@ -1,52 +1,52 @@
 # Authentication & Secure Credential Management Guide
 
-ContextMesh provides an interactive, non-intrusive authentication workflow designed to connect enterprise systems (ZAI GLM, Jira, Notion, Gmail) without requiring hardcoded secrets or raw environment file editing.
+ContextMesh provides an interactive, non-intrusive authentication workflow designed to connect enterprise systems (ZAI GLM, Jira, Slack, Gmail) without requiring hardcoded secrets or raw environment file editing.
 
 ---
 
 ## 1. Security Architecture: The Credential Vault
 
 All third-party credentials entered through the frontend or API are stored using **Fernet symmetric encryption** (AES-128-CBC with HMAC-SHA256 authenticated encryption):
-
-- **Master Key**: Generated automatically and stored in `.secrets/.vault_key` with strict filesystem permissions (`chmod 0600`).
-- **Encrypted Keystore**: Stored in `.secrets/vault.enc`. Raw tokens and API keys are never stored in plaintext on disk.
-- **Masked Telemetry**: Keys are masked across all logs, traces, and UI displays (`sk-****...a8b9`).
-- **Dynamic Reconfiguration**: Connectors dynamically resolve credentials from the vault on every query. Updating a key in the UI immediately applies to the next agent execution without restarting the server.
+- The encryption key is derived and saved to `.secrets/vault.key`.
+- The encrypted payload is persisted to `.secrets/vault.enc`.
+- The `.secrets/` directory is strictly excluded in `.gitignore` to guarantee credentials are never checked into version control.
 
 ---
 
-## 2. Supported Providers & Setup Instructions
+## 2. Setting Up Live Enterprise Integrations
 
-### 🤖 2.1 ZAI GLM API (Zhipu AI)
-ContextMesh uses ZAI's GLM models (e.g. `glm-4-plus`, `glm-4-flash`) via an OpenAI-compatible interface.
-1. Sign up or log into the **Zhipu AI Open Platform**: [https://open.bigmodel.cn/](https://open.bigmodel.cn/)
-2. Navigate to **API Keys** in the User Center: [open.bigmodel.cn/usercenter/apikeys](https://open.bigmodel.cn/usercenter/apikeys)
-3. Click **Create API Key** and copy the string.
-4. In ContextMesh Streamlit UI, navigate to the **"🔐 Integrations & Auth"** tab.
-5. Paste your API key, choose your model (`glm-4-plus`), and click **⚡ Test & Save ZAI Key**.
+### 🤖 2.1 ZAI GLM API (Foundation LLM)
+1. Open the **Zhipu BigModel Console** ([open.bigmodel.cn/usercenter/apikeys](https://open.bigmodel.cn/usercenter/apikeys)) or the global **Z.ai Platform** ([z.ai](https://z.ai/)).
+2. Copy your API Key (e.g. `74xxxxxxxxxx.xxxxxxxxxxxx`).
+3. In ContextMesh, open the **"🔐 Integrations & Auth"** tab and paste the key.
+4. Select your preferred model (default: `glm-4.5-air` for agent workflows).
+5. Click **⚡ Test & Save ZAI Connection**.
 
 ---
 
 ### 📌 2.2 Atlassian Jira
-1. Log in to your Atlassian account's security portal: [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-2. Click **Create API token**, give it a label (e.g., `ContextMesh`), and copy the token.
-3. In the UI, enter:
-   - **Jira Instance URL**: `https://your-company.atlassian.net`
+1. Go to Atlassian API Tokens: [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API token**, name it `ContextMesh`, and copy the token.
+3. In ContextMesh, provide:
+   - **Base URL**: e.g., `https://your-company.atlassian.net`
    - **User Email**: Your Atlassian account email
    - **API Token**: The token generated in step 2.
 4. Click **⚡ Test & Save Jira Connection** to verify with Atlassian's REST API.
 
 ---
 
-### 📓 2.3 Notion
-1. Go to Notion's Integration Portal: [https://www.notion.so/my-integrations](https://www.notion.so/my-integrations)
-2. Click **+ New integration**.
-3. Set the name to `ContextMesh`, select your workspace, and copy the **Internal Integration Secret** (`ntn_...`).
-4. **Granting Page Access**:
-   - Open any Notion page, database, or meeting note you want ContextMesh to read.
-   - Click the `...` menu in the top-right corner.
-   - Click **Connect to** and select your `ContextMesh` integration.
-5. In ContextMesh UI, paste the secret into the Notion card and click **⚡ Test & Save Notion Connection**.
+### 💬 2.3 Slack
+1. Go to Slack's App Management Console: [https://api.slack.com/apps](https://api.slack.com/apps)
+2. Click **Create New App** > **From scratch**, name it `ContextMesh`, and select your workspace.
+3. Under **OAuth & Permissions**, add Bot Token Scopes:
+   - `channels:history`, `channels:read`
+   - `groups:history`, `groups:read`
+   - `chat:write`
+   - `search:read`
+4. Click **Install to Workspace** and copy the **Bot User OAuth Token** (`xoxb-...`) or **User OAuth Token** (`xoxp-...`).
+5. In ContextMesh UI, paste the token into the Slack card and click **⚡ Test & Save Slack Connection**.
+
+Alternatively, connect to the official hosted **Slack MCP Server** at `https://mcp.slack.com/mcp` using your OAuth Bearer / Bot token.
 
 ---
 
@@ -76,5 +76,5 @@ ContextMesh supports two connection methods for Gmail:
 ## 3. Switching Modes: Demo Sandbox vs. Live Enterprise
 
 ContextMesh includes a one-click mode switcher on the **"🔐 Integrations & Auth"** tab:
-- **🧪 Demo Sandbox (Synthetic Project Atlas)**: Perfect for offline development, evaluations, and testing. Queries synthetic Jira tickets, Notion runbooks, and email threads without connecting to live external servers.
+- **🧪 Demo Sandbox (Synthetic Project Atlas)**: Perfect for offline development, evaluations, and testing. Queries synthetic Jira tickets, Slack channels/canvases, and email threads without connecting to live external servers.
 - **🚀 Live Enterprise Mode**: Directs the agent to query your live authenticated enterprise APIs.

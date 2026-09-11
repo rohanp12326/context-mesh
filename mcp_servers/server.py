@@ -1,6 +1,6 @@
 """Model Context Protocol (MCP) Standard Server for ContextMesh.
 
-Exposes enterprise tools (Jira, Notion, Gmail) and the high-level ContextMesh
+Exposes enterprise tools (Jira, Slack, Gmail) and the high-level ContextMesh
 agent as a native Model Context Protocol server. External MCP clients (Claude Desktop,
 Cursor, Continue, Windsurf, VS Code) can connect over stdio or SSE.
 
@@ -79,12 +79,12 @@ async def jira_create_issue(project: str, summary: str, description: str = "", p
 
 
 @server.tool(
-    name="notion_search_pages",
-    description="Search Notion pages, documents, runbooks, and meeting notes."
+    name="slack_search_messages",
+    description="Search Slack messages, channels, discussions, and canvases."
 )
-async def notion_search_pages(query: str, limit: int = 10) -> str:
-    """Search Notion pages."""
-    call = MCPToolCall(tool_name="notion.search_pages", arguments={"query": query, "limit": limit})
+async def slack_search_messages(query: str, limit: int = 10) -> str:
+    """Search Slack messages."""
+    call = MCPToolCall(tool_name="slack.search_messages", arguments={"query": query, "limit": limit})
     res = await registry.execute_tool(call)
     if not res.success:
         return f"Error: {res.error}"
@@ -92,13 +92,27 @@ async def notion_search_pages(query: str, limit: int = 10) -> str:
 
 
 @server.tool(
-    name="notion_get_page_content",
-    description="Get full content of a Notion page by page ID."
+    name="slack_get_thread",
+    description="Get full content of a Slack thread or discussion by thread/channel ID."
 )
-async def notion_get_page_content(page_id: str) -> str:
-    """Get Notion page content."""
-    call = MCPToolCall(tool_name="notion.get_page_content", arguments={"page_id": page_id})
+async def slack_get_thread(thread_id: str) -> str:
+    """Get Slack thread content."""
+    call = MCPToolCall(tool_name="slack.get_thread", arguments={"thread_id": thread_id})
     res = await registry.execute_tool(call)
+    if not res.success:
+        return f"Error: {res.error}"
+    return json.dumps(res.data, indent=2)
+
+
+@server.tool(
+    name="slack_post_message",
+    description="Post a message to a Slack channel (mutation operation)."
+)
+async def slack_post_message(channel: str, text: str) -> str:
+    """Post message to Slack channel."""
+    call = MCPToolCall(tool_name="slack.post_message", arguments={"channel": channel, "text": text})
+    scope = PermissionScope(user_id="mcp_client", can_mutate=True, allowed_scopes=["write:slack"])
+    res = await registry.execute_tool(call, scope=scope)
     if not res.success:
         return f"Error: {res.error}"
     return json.dumps(res.data, indent=2)
@@ -133,7 +147,7 @@ async def gmail_get_thread(thread_id: str) -> str:
 @server.tool(
     name="contextmesh_query",
     description=(
-        "Ask ContextMesh an enterprise question across Jira, Notion, and Gmail. "
+        "Ask ContextMesh an enterprise question across Jira, Slack, and Gmail. "
         "Automatically decomposes query, retrieves cross-system evidence, detects "
         "contradictions, and generates cited answer."
     )

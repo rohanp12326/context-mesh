@@ -8,7 +8,7 @@ from security.vault import VAULT, mask_secret
 from security.connection_testers import (
     test_zai_connection,
     test_jira_connection,
-    test_notion_connection,
+    test_slack_connection,
     test_gmail_connection,
     test_mcp_connection,
 )
@@ -57,17 +57,17 @@ def render_auth_wizard():
         with c2:
             render_status_pill(status["jira"]["is_configured"], "Jira")
         with c3:
-            render_status_pill(status["notion"]["is_configured"], "Notion")
+            render_status_pill(status["slack"]["is_configured"], "Slack")
         with c4:
             render_status_pill(status["gmail"]["is_configured"], "Gmail")
 
     st.markdown("---")
 
     # 2. Service Cards
-    card_zai, card_jira, card_notion, card_gmail = st.tabs([
+    card_zai, card_jira, card_slack, card_gmail = st.tabs([
         "🤖 ZAI GLM API",
         "📌 Atlassian Jira",
-        "📓 Notion",
+        "💬 Slack",
         "📧 Gmail"
     ])
 
@@ -270,68 +270,78 @@ def render_auth_wizard():
                         st.warning(f"Saved credentials, but live test returned: {msg}")
                     st.rerun()
 
-    # ------------------ NOTION ------------------
-    with card_notion:
-        st.markdown("### 📓 Notion Configuration")
-        st.info("Query project specs, architecture decision records, and meeting runbooks.")
-        notion_creds = VAULT.get_credential("notion")
-        notion_auth_type = st.radio(
+    # ------------------ SLACK ------------------
+    with card_slack:
+        st.markdown("### 💬 Slack Configuration")
+        st.info("Query project channels, release updates, canvases, and discussion threads across your Slack workspace.")
+        slack_creds = VAULT.get_credential("slack")
+        slack_auth_type = st.radio(
             "Connection Protocol",
-            ["Notion Integration Secret (Internal)", "Official Hosted Notion MCP (mcp.notion.com)"],
+            ["Slack Bot/User Token (Web API)", "Official Hosted Slack MCP (mcp.slack.com)"],
             horizontal=True,
-            key="wizard_notion_auth_type"
+            key="wizard_slack_auth_type"
         )
 
-        if "Internal" in notion_auth_type:
-            st.link_button("🔗 Open Notion Integrations Portal", "https://www.notion.so/my-integrations", use_container_width=True)
-            with st.expander("📖 Step-by-Step Guide: How to set up Notion Internal Integration", expanded=False):
+        if "Web API" in slack_auth_type:
+            st.link_button("🔗 Open Slack API Apps Console", "https://api.slack.com/apps", use_container_width=True)
+            with st.expander("📖 Step-by-Step Guide: How to create a Slack App & obtain tokens", expanded=False):
                 st.markdown("""
-                1. Click the button above to open Notion's integration manager: [https://www.notion.so/my-integrations](https://www.notion.so/my-integrations)
-                2. Click **New integration**.
-                3. Name it `ContextMesh`, associate it with your workspace, and copy the **Internal Integration Secret** (`ntn_...`).
-                4. **Crucial Step**: In your Notion app, open any page or database you want the agent to see, click the `...` menu in the top right, select **Connect to**, and choose your `ContextMesh` integration.
+                1. Click the button above to open Slack's App console: [https://api.slack.com/apps](https://api.slack.com/apps)
+                2. Click **Create New App** > **From scratch**, name it `ContextMesh`, and select your Slack workspace.
+                3. Under **OAuth & Permissions**, add Bot Token Scopes:
+                   - `channels:history`, `channels:read` (public channel messages)
+                   - `groups:history`, `groups:read` (private channels if needed)
+                   - `chat:write` (sending messages/approvals)
+                   - `search:read` (workspace search)
+                4. Click **Install to Workspace** at the top of the page.
+                5. Copy either the **Bot User OAuth Token** (`xoxb-...`) or **User OAuth Token** (`xoxp-...`).
                 """)
-            notion_token = st.text_input("Notion Integration Secret", value=notion_creds.get("api_key", ""), type="password", placeholder="ntn_...")
+            default_slack_token = slack_creds.get("bot_token") or slack_creds.get("user_token") or ""
+            slack_token = st.text_input("Slack Bot/User Token", value=default_slack_token, type="password", placeholder="xoxb-... or xoxp-...")
 
-            if st.button("⚡ Test & Save Notion Connection", key="btn_save_notion"):
-                with st.spinner("Connecting to Notion API..."):
-                    ok, msg, latency = asyncio.run(test_notion_connection(notion_token))
+            if st.button("⚡ Test & Save Slack Connection", key="btn_save_slack"):
+                with st.spinner("Connecting to Slack API..."):
+                    ok, msg, latency = asyncio.run(test_slack_connection(slack_token))
                     if ok:
-                        data = dict(notion_creds)
-                        data["api_key"] = notion_token
-                        VAULT.set_credential("notion", data)
+                        data = dict(slack_creds)
+                        if slack_token.startswith("xoxp-"):
+                            data["user_token"] = slack_token.strip()
+                        else:
+                            data["bot_token"] = slack_token.strip()
+                        VAULT.set_credential("slack", data)
                         st.success(f"✅ {msg}")
                         st.rerun()
                     else:
                         st.error(f"❌ {msg}")
         else:
-            st.markdown("Connect to the official **Notion Hosted Model Context Protocol (MCP)** server.")
-            st.link_button("🔗 Notion MCP Guide & Developers", "https://developers.notion.com/", use_container_width=True)
-            with st.expander("📖 Notion MCP Authentication Note", expanded=False):
+            st.markdown("Connect to the official **Slack Hosted Model Context Protocol (MCP)** server.")
+            st.link_button("🔗 Slack MCP Documentation", "https://docs.slack.dev/ai/slack-mcp-server/", use_container_width=True)
+            with st.expander("📖 Slack MCP Configuration & Protocol", expanded=False):
                 st.markdown("""
-                - **Official Hosted MCP (`mcp.notion.com`)**: Strictly requires an **OAuth 2.0 Access Token** with PKCE.
-                - **Internal Integration Secrets (`ntn_...`)**: Cannot be passed directly to `mcp.notion.com` (will return 401). Use the **Notion Integration Secret (Internal)** mode above or run a local stdio MCP server (`@modelcontextprotocol/server-notion`).
+                - **Official Hosted MCP (`https://mcp.slack.com/mcp`)**: Runs over JSON-RPC 2.0 via Streamable HTTP.
+                - **Authentication**: Requires a Slack User token (`xoxp-...`) or Bot token (`xoxb-...`) passed in the `Authorization: Bearer <token>` header.
+                - **Tools**: Supports `slack.search_messages`, `slack.get_thread`, and `slack.post_message`.
                 """)
-            notion_mcp_url = st.text_input(
+            slack_mcp_url = st.text_input(
                 "Remote MCP Endpoint URL",
-                value=notion_creds.get("mcp_endpoint", "https://mcp.notion.com/mcp"),
-                help="Official hosted Notion MCP endpoint"
+                value=slack_creds.get("mcp_endpoint", "https://mcp.slack.com/mcp"),
+                help="Official hosted Slack MCP endpoint"
             )
-            notion_mcp_token = st.text_input(
-                "Notion MCP / OAuth Bearer Token",
-                value=notion_creds.get("mcp_token", ""),
+            slack_mcp_token = st.text_input(
+                "Slack MCP / OAuth Bearer Token",
+                value=slack_creds.get("mcp_token", ""),
                 type="password",
-                placeholder="Bearer token from Notion OAuth..."
+                placeholder="xoxb-... or xoxp-... or Bearer token"
             )
-            if st.button("⚡ Test & Save Notion MCP Connection", key="btn_save_notion_mcp"):
-                with st.spinner("Connecting to official Notion MCP server..."):
-                    ok, msg, latency = asyncio.run(test_mcp_connection("notion", notion_mcp_url, notion_mcp_token))
-                    data = dict(notion_creds)
+            if st.button("⚡ Test & Save Slack MCP Connection", key="btn_save_slack_mcp"):
+                with st.spinner("Connecting to official Slack MCP server..."):
+                    ok, msg, latency = asyncio.run(test_mcp_connection("slack", slack_mcp_url, slack_mcp_token))
+                    data = dict(slack_creds)
                     data.update({
-                        "mcp_endpoint": notion_mcp_url.strip(),
-                        "mcp_token": notion_mcp_token.strip()
+                        "mcp_endpoint": slack_mcp_url.strip(),
+                        "mcp_token": slack_mcp_token.strip()
                     })
-                    VAULT.set_credential("notion", data)
+                    VAULT.set_credential("slack", data)
                     if ok:
                         st.success(f"✅ {msg}")
                     else:

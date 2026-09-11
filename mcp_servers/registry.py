@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from connectors.base import PermissionScope
 from mcp_servers.base import MCPToolCall, MCPToolDefinition, MCPToolResult
 from mcp_servers.jira_server import JiraMCPServer
-from mcp_servers.notion_server import NotionMCPServer
+from mcp_servers.slack_server import SlackMCPServer
 from mcp_servers.gmail_server import GmailMCPServer
 
 
@@ -15,11 +15,11 @@ class MCPToolRegistry:
     def __init__(
         self,
         jira_server: Optional[JiraMCPServer] = None,
-        notion_server: Optional[NotionMCPServer] = None,
+        slack_server: Optional[SlackMCPServer] = None,
         gmail_server: Optional[GmailMCPServer] = None,
     ):
         self.jira = jira_server or JiraMCPServer()
-        self.notion = notion_server or NotionMCPServer()
+        self.slack = slack_server or SlackMCPServer()
         self.gmail = gmail_server or GmailMCPServer()
 
         self._tools: Dict[str, MCPToolDefinition] = {}
@@ -31,9 +31,9 @@ class MCPToolRegistry:
             self._tools[tool_def.name] = tool_def
             self._handlers[tool_def.name] = self.jira
 
-        for tool_def in self.notion.get_tool_definitions():
+        for tool_def in self.slack.get_tool_definitions():
             self._tools[tool_def.name] = tool_def
-            self._handlers[tool_def.name] = self.notion
+            self._handlers[tool_def.name] = self.slack
 
         for tool_def in self.gmail.get_tool_definitions():
             self._tools[tool_def.name] = tool_def

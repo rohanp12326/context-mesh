@@ -12,8 +12,8 @@ SYNTHESIS_SYSTEM_PROMPT = """You are ContextMesh, an AI engineering intelligence
 Answer the user's question accurately using ONLY the provided evidence.
 
 Requirements:
-1. Ground every substantive claim in one or more evidence items using bracket notation like [jira:ATL-101] or [gmail:gmail-th-01].
-2. Point out conflicts or date discrepancies between systems (e.g. if Notion says Sept 10 but Email says Sept 18).
+1. Ground every substantive claim in one or more evidence items using bracket notation like [jira:ATL-101], [slack:slack-msg-01], or [gmail:gmail-th-01].
+2. Point out conflicts or date discrepancies between systems (e.g. if Slack says Sept 10 but Email says Sept 18).
 3. Specify who owns blockers and what commitments were made with exact quotes/dates.
 4. If something is unknown or missing from evidence, state that plainly.
 """
@@ -33,7 +33,7 @@ class AnswerSynthesizer:
                 "content": (
                     "You are ContextMesh, an intelligent AI assistant. "
                     "Answer the user's question directly, clearly, and comprehensively using your general knowledge. "
-                    "Do not mention Jira, Notion, or Gmail unless the user explicitly asks about them."
+                    "Do not mention Jira, Slack, or Gmail unless the user explicitly asks about them."
                 )
             },
             {"role": "user", "content": query}
@@ -89,7 +89,7 @@ class AnswerSynthesizer:
         """Compose final cited answer."""
         if not evidence:
             return AgentResponse(
-                answer="No relevant evidence was found across Jira, Notion, or Gmail to answer your request.",
+                answer="No relevant evidence was found across Jira, Slack, or Gmail to answer your request.",
                 citations=[],
                 confidence=0.1,
                 plan=plan,
@@ -203,12 +203,12 @@ class AnswerSynthesizer:
                 date_str = f" | {em.updated_at}" if em.updated_at else ""
                 parts.append(f"- **{em.title}** ({em.author}{date_str}): \"{em.content[:250]}...\" [gmail:{em.source_object_id}]")
 
-        # Find Notion specs
-        notion_pages = [ev for ev in evidence if ev.source == "notion"]
-        if notion_pages:
-            parts.append("\n### Relevant Documentation & Specifications")
-            for np in notion_pages:
-                parts.append(f"- **{np.title}**: {np.content[:180]}... [notion:{np.source_object_id}]")
+        # Find Slack communications & canvases
+        slack_items = [ev for ev in evidence if ev.source == "slack"]
+        if slack_items:
+            parts.append("\n### Relevant Slack Discussions & Canvases")
+            for si in slack_items:
+                parts.append(f"- **{si.title}**: {si.content[:180]}... [slack:{si.source_object_id}]")
 
         # Include contradictions if any
         if contradictions:

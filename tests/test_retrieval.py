@@ -37,12 +37,12 @@ def test_freshness_evaluation():
 
 
 def test_contradiction_detection():
-    notion_item = normalize_connector_item(ConnectorItem(
-        source="notion",
+    slack_item = normalize_connector_item(ConnectorItem(
+        source="slack",
         id="spec",
         title="Atlas Spec",
         content="Target Release Date: September 10, 2026",
-        url="https://notion.so/spec"
+        url="https://slack.com/archives/C123/spec"
     ))
     email_item = normalize_connector_item(ConnectorItem(
         source="gmail",
@@ -52,7 +52,7 @@ def test_contradiction_detection():
         url="https://gmail.com/th-01"
     ))
 
-    contradictions = detect_contradictions([notion_item, email_item])
+    contradictions = detect_contradictions([slack_item, email_item])
     assert len(contradictions) > 0
     assert "Payments Launch Target Date" in contradictions[0].topic
 

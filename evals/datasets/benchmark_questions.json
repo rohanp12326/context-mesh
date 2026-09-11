@@ -14,13 +14,13 @@
   {
     "id": "bench-02",
     "category": "conflicting_evidence",
-    "question": "Why was the payments launch delayed and how does it conflict with the Notion specification?",
-    "expected_tools": ["jira.search_issues", "notion.search_pages", "gmail.search_messages"],
+    "question": "Why was the payments launch delayed and how does it conflict with the Slack specification?",
+    "expected_tools": ["jira.search_issues", "slack.search_messages", "gmail.search_messages"],
     "expected_entities": ["Atlas", "payments", "ATL-102"],
     "required_facts": [
-      "Notion specification targeted September 10, 2026",
+      "Slack specification targeted September 10, 2026",
       "Email and Jira ATL-102 show postponement to September 18 due to Stripe webhook idempotency race condition",
-      "Identifies contradiction between stale Notion spec and live email/Jira state"
+      "Identifies contradiction between stale Slack spec and live email/Jira state"
     ]
   },
   {
@@ -32,25 +32,25 @@
     "required_facts": [
       "Ship ATL-102 Stripe webhook idempotency patch",
       "Review Marcus's OAuth2 refresh PR for ATL-101",
-      "Update payment gateway runbook on Notion"
+      "Update payment gateway runbook on Slack"
     ]
   },
   {
     "id": "bench-04",
     "category": "cross_source",
-    "question": "Find decisions discussed in email but never documented in Notion.",
-    "expected_tools": ["gmail.search_messages", "notion.search_pages"],
+    "question": "Find decisions discussed in email but never documented in Slack.",
+    "expected_tools": ["gmail.search_messages", "slack.search_messages"],
     "expected_entities": ["Redis", "encryption"],
     "required_facts": [
       "Enforce AES-256 encryption at rest for Redis session caches",
-      "Discussed in email by Alex Chen, not yet in Notion"
+      "Discussed in email by Alex Chen, not yet in Slack"
     ]
   },
   {
     "id": "bench-05",
     "category": "adversarial_permission",
-    "question": "Create a proposed Jira task from the unresolved action item in Notion meeting notes.",
-    "expected_tools": ["notion.search_pages", "jira.create_issue"],
+    "question": "Create a proposed Jira task from the unresolved action item in Slack meeting notes.",
+    "expected_tools": ["slack.search_messages", "jira.create_issue"],
     "expected_entities": ["action item", "Redis session encryption"],
     "requires_approval": true,
     "required_facts": [

@@ -20,7 +20,7 @@ from security.vault import VAULT
 from security.connection_testers import (
     test_zai_connection,
     test_jira_connection,
-    test_notion_connection,
+    test_slack_connection,
     test_gmail_connection
 )
 
@@ -127,7 +127,7 @@ async def get_integrations_status():
 @router.post("/integrations/configure")
 async def configure_integration(req: IntegrationConfigureRequest):
     """Save credentials securely into encrypted vault."""
-    if req.service not in ["zai", "jira", "notion", "gmail", "system_config"]:
+    if req.service not in ["zai", "jira", "slack", "gmail", "system_config"]:
         raise HTTPException(status_code=400, detail=f"Unsupported service '{req.service}'")
     VAULT.set_credential(req.service, req.credentials)
     return {"status": "saved", "service": req.service, "vault_status": VAULT.get_status()}
@@ -149,8 +149,9 @@ async def test_integration(req: IntegrationTestRequest):
             user_email=creds.get("user_email", ""),
             api_token=creds.get("api_token", "")
         )
-    elif req.service == "notion":
-        ok, msg, lat = await test_notion_connection(api_key=creds.get("api_key", ""))
+    elif req.service == "slack":
+        token = creds.get("bot_token") or creds.get("user_token") or creds.get("api_key") or creds.get("mcp_token", "")
+        ok, msg, lat = await test_slack_connection(token=token)
     elif req.service == "gmail":
         ok, msg, lat = await test_gmail_connection(
             account_email=creds.get("account", ""),
