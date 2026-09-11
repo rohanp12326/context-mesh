@@ -22,7 +22,7 @@ Standard RAG architectures fail on cross-tool questions like:
 
 **ContextMesh** solves this problem by treating cross-tool retrieval as an **agentic decomposition and synthesis problem**:
 1. **Typed Query Planning**: Decomposes complex inquiries into parallelizable retrieval steps.
-2. **Standardized MCP Tool Execution**: Queries Jira, Slack, and Gmail concurrently through Model Context Protocol servers.
+2. **Standardized MCP Tool Execution**: Queries Jira, Slack, and Gmail concurrently through the **Composio MCP Gateway** with unified 1-click OAuth authentication, session-based tool execution, and automatic offline mock fallback.
 3. **Evidence Normalization & Freshness**: Computes SHA-256 integrity hashes, evaluates timestamp freshness, and detects contradictions across systems (e.g. stale Slack release specs vs recent Gmail delay announcements).
 4. **Tiered Memory Architecture**: Combines thread-scoped working state checkpoints with durable, structured long-term memory (project aliases, roles, confirmed decisions) governed by strict promotion & superseding policies.
 5. **Human-in-the-Loop Mutation Gating**: Enforces approval gates before mutating tools (e.g. creating Jira tickets) can execute.
@@ -48,9 +48,11 @@ User / Streamlit UI / API
           │
           ▼
  Parallel MCP Tool Execution (asyncio.gather)
-    ├── Jira MCP Server     (JQL search, issue details, create issue)
-    ├── Slack MCP Server    (Message search, thread context, channel discussion)
-    └── Gmail MCP Server    (Thread search, message content)
+    ├── Composio MCP Gateway (Unified 1-Click OAuth Sessions)
+    │   ├── Jira MCP      (JQL search, issue details, create issue)
+    │   ├── Slack MCP     (Message search, thread context, post message)
+    │   └── Gmail MCP     (Thread search, message content)
+    └── Offline Fallback  (Project Atlas synthetic sandbox)
           │
           ▼
  Evidence Normalization & Freshness Resolution
@@ -175,10 +177,15 @@ context-mesh/
 │   └── gmail/connector.py
 ├── mcp_servers/              # Model Context Protocol servers
 │   ├── base.py
+│   ├── composio_client.py    # Composio MCP Gateway client (OAuth + MCP Sessions)
+│   ├── remote_client.py      # Unified remote/Composio MCP client dispatcher
 │   ├── jira_server.py
 │   ├── slack_server.py
 │   ├── gmail_server.py
 │   └── registry.py           # Parallel dispatch manager
+├── security/                 # Secrets vault & connection verifiers
+│   ├── vault.py              # AES-GCM encrypted local credentials vault
+│   └── connection_testers.py # Live OAuth & API connection testers
 ├── retrieval/                # Evidence pipeline
 │   ├── normalization.py      # Canonical Evidence schema & SHA-256 hashing
 │   ├── freshness.py          # Freshness scoring & contradiction detection

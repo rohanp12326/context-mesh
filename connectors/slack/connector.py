@@ -2,10 +2,13 @@
 
 import json
 import os
+import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import httpx
 from connectors.base import BaseConnector, ConnectorItem, PermissionScope
 from security.vault import VAULT, is_valid_credential_value
+from mcp_servers.composio_client import COMPOSIO_CLIENT
 from observability.logging import get_logger
 
 logger = get_logger("connectors.slack")
@@ -138,8 +141,10 @@ class SlackConnector(BaseConnector):
             raise PermissionError("Access denied: missing 'read:slack' scope")
 
         is_mcp_ready = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("slack"))
         is_configured = bool(
             is_mcp_ready
+            or is_composio_ready
             or (self.bot_token and is_valid_credential_value(self.bot_token))
             or (self.user_token and is_valid_credential_value(self.user_token))
             or VAULT.is_service_authenticated("slack")
@@ -149,14 +154,65 @@ class SlackConnector(BaseConnector):
                 logger.info("Slack live credentials not configured; falling back to synthetic dataset.")
             return self._search_mock(query, limit)
 
-        # Mode 1: Remote Official Hosted Slack MCP Server (mcp.slack.com)
-        if self.mode == "remote_mcp" or is_mcp_ready:
+    @staticmethod
+    def _sanitize_slack_query(query: str) -> str:
+        """Normalize user query for Slack search API.
+
+        Slack search API requires a non-empty string and performs literal keyword matching.
+        If the query is empty or composed exclusively of recency/meta words (e.g. 'latest', 'recent',
+        'messages', 'what is my latest slack messages'), literal search will either error ('no_query')
+        or return 0 matches. In such cases, we convert the query to '*' (wildcard matching all recent messages).
+        """
+        if not query:
+            return "*"
+        clean = query.strip()
+        if not clean or clean in ("*", '""', "''", "all"):
+            return "*"
+
+        words = re.findall(r"[a-zA-Z0-9]+", clean.lower())
+        if not words:
+            return "*"
+
+        meta_words = {
+            "what", "is", "are", "my", "the", "latest", "recent", "new", "newest",
+            "slack", "messages", "message", "msg", "msgs", "chat", "chats",
+            "show", "get", "fetch", "check", "find", "read", "list", "all",
+            "inbox", "channel", "channels"
+        }
+        if all(w in meta_words for w in words):
+            return "*"
+        return clean
+
+    async def search(self, query: str, limit: int = 10, scope: Optional[PermissionScope] = None) -> List[ConnectorItem]:
+        if scope and "read:slack" not in scope.allowed_scopes:
+            raise PermissionError("Access denied: missing 'read:slack' scope")
+
+        is_mcp_ready = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("slack"))
+        is_configured = bool(
+            is_mcp_ready
+            or is_composio_ready
+            or (self.bot_token and is_valid_credential_value(self.bot_token))
+            or (self.user_token and is_valid_credential_value(self.user_token))
+            or VAULT.is_service_authenticated("slack")
+        )
+        if self.mode == "mock" or not is_configured:
+            if self.mode != "mock" and not is_configured:
+                logger.info("Slack live credentials not configured; falling back to synthetic dataset.")
+            return self._search_mock(query, limit)
+
+        # Mode 1: Remote Composio MCP or Official Hosted Slack MCP Server
+        active_token = self.user_token or self.bot_token
+        if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
             try:
                 remote_results = await self._search_remote_mcp(query, limit)
-                if remote_results:
+                # In live mode with active Composio connection and no direct bot token, return real results directly
+                if remote_results or (is_composio_ready and not active_token):
                     return remote_results
             except Exception as e:
-                logger.warning(f"Slack remote MCP search failed: {e}. Falling back to standard live/mock methods.")
+                logger.warning(f"Slack remote MCP search failed: {e}.")
+                if is_composio_ready and not active_token:
+                    return []
 
         # Mode 2: Live Slack Web API
         active_token = self.user_token or self.bot_token
@@ -206,7 +262,7 @@ class SlackConnector(BaseConnector):
         return self._search_mock(query, limit)
 
     async def _search_remote_mcp(self, query: str, limit: int = 10) -> List[ConnectorItem]:
-        """Search Slack workspace via official hosted Slack MCP server (mcp.slack.com)."""
+        """Search Slack workspace via Composio MCP or official hosted Slack MCP server."""
         from mcp_servers.remote_client import RemoteMCPClient
 
         client = RemoteMCPClient(
@@ -215,18 +271,47 @@ class SlackConnector(BaseConnector):
             auth_token=self.mcp_token or self.user_token or self.bot_token,
         )
 
+        clean_query = self._sanitize_slack_query(query)
         data = None
-        # Official Slack MCP tools: slack_search_messages_and_files, slack_search_channels, search_messages, search
-        for tool_name in ["slack_search_messages_and_files", "search_messages", "slack_search", "search"]:
+        last_error = None
+
+        # Candidate tools mapping to Slack message search
+        for tool_name in ["SLACK_SEARCH_MESSAGES", "slack.search_messages", "slack_search_messages"]:
             try:
-                data = await client.call_tool(tool_name, {"query": query, "limit": limit, "count": limit})
-                if data:
+                data = await client.call_tool(tool_name, {"query": clean_query, "limit": limit, "count": limit})
+                if data is not None:
                     break
             except Exception as e:
+                last_error = e
                 logger.debug(f"Slack MCP tool {tool_name} failed: {e}")
+                # If error is no_query or invalid query, retry once with wildcard '*'
+                if clean_query != "*" and "no_query" in str(e).lower():
+                    try:
+                        clean_query = "*"
+                        data = await client.call_tool(tool_name, {"query": "*", "limit": limit, "count": limit})
+                        if data is not None:
+                            break
+                    except Exception as e2:
+                        last_error = e2
+                        continue
                 continue
 
-        if not data:
+        # If keyword search returned 0 matches and query had recency intent, retry with wildcard '*'
+        if isinstance(data, dict) and clean_query != "*":
+            msg_obj = data.get("messages")
+            matches = msg_obj.get("matches", []) if isinstance(msg_obj, dict) else (data.get("matches") or [])
+            if not matches and any(w in query.lower() for w in ["latest", "recent", "new", "message", "all"]):
+                logger.info(f"Slack search for '{clean_query}' returned 0 matches; retrying with wildcard '*' for recent messages.")
+                try:
+                    retry_data = await client.call_tool("SLACK_SEARCH_MESSAGES", {"query": "*", "limit": limit, "count": limit})
+                    if retry_data is not None:
+                        data = retry_data
+                except Exception as e:
+                    logger.debug(f"Wildcard retry failed: {e}")
+
+        if data is None:
+            if last_error:
+                raise last_error
             return []
 
         if isinstance(data, str):
@@ -244,30 +329,43 @@ class SlackConnector(BaseConnector):
         if isinstance(data, list):
             raw_items = data
         elif isinstance(data, dict):
-            raw_items = data.get("messages") or data.get("matches") or data.get("results") or []
+            msg_obj = data.get("messages")
+            if isinstance(msg_obj, dict):
+                raw_items = msg_obj.get("matches") or msg_obj.get("items") or []
+            elif isinstance(msg_obj, list):
+                raw_items = msg_obj
+            else:
+                raw_items = data.get("matches") or data.get("results") or data.get("items") or []
 
         items: List[ConnectorItem] = []
         for idx, item in enumerate(raw_items):
             if not isinstance(item, dict):
                 continue
-            item_id = str(item.get("id") or item.get("ts") or f"mcp-slack-{idx}")
+            item_id = str(item.get("id") or item.get("ts") or item.get("iid") or f"mcp-slack-{idx}")
             channel = item.get("channel") or item.get("channel_name") or "general"
             if isinstance(channel, dict):
-                channel = channel.get("name", "general")
-            title = item.get("title") or f"Slack #{channel}"
-            content = item.get("content") or item.get("text") or item.get("snippet") or f"Slack message in #{channel}"
+                channel = channel.get("name") or channel.get("id") or "general"
+            msg_text = item.get("content") or item.get("text") or item.get("snippet") or f"Slack message in #{channel}"
+            title = item.get("title") or f"Slack #{channel}: {msg_text[:50]}"
             url = item.get("url") or item.get("permalink") or f"https://slack.com/archives/{channel}/{item_id}"
-            updated_at = item.get("updated_at") or item.get("ts")
+            ts_val = item.get("updated_at") or item.get("ts")
+            iso_time = None
+            if ts_val:
+                try:
+                    iso_time = datetime.fromtimestamp(float(ts_val), tz=timezone.utc).isoformat()
+                except Exception:
+                    iso_time = str(ts_val)
 
             items.append(
                 ConnectorItem(
                     source="slack",
                     id=item_id,
                     title=str(title),
-                    content=str(content),
+                    content=str(msg_text),
                     url=url,
-                    author=item.get("author") or item.get("user") or item.get("username"),
-                    updated_at=str(updated_at) if updated_at else None,
+                    author=item.get("author") or item.get("username") or item.get("user") or "slack_user",
+                    created_at=iso_time,
+                    updated_at=iso_time,
                     raw_payload=item,
                     metadata={"channel": channel, "mcp": True}
                 )
@@ -279,8 +377,10 @@ class SlackConnector(BaseConnector):
             raise PermissionError("Access denied: missing 'read:slack' scope")
 
         is_mcp_ready = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("slack"))
         is_configured = bool(
             is_mcp_ready
+            or is_composio_ready
             or (self.bot_token and is_valid_credential_value(self.bot_token))
             or (self.user_token and is_valid_credential_value(self.user_token))
             or VAULT.is_service_authenticated("slack")
@@ -289,7 +389,7 @@ class SlackConnector(BaseConnector):
             return self._get_by_id_mock(item_id)
 
         # Remote MCP tool: slack_read_channel, slack_read_thread, or slack_read_canvas
-        if self.mode == "remote_mcp" or is_mcp_ready:
+        if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
             try:
                 from mcp_servers.remote_client import RemoteMCPClient
                 client = RemoteMCPClient(
@@ -297,7 +397,7 @@ class SlackConnector(BaseConnector):
                     endpoint_url=self.mcp_endpoint,
                     auth_token=self.mcp_token or self.user_token or self.bot_token,
                 )
-                for tool_name in ["slack_read_thread", "read_thread", "slack_read_channel", "read_channel", "slack_read_canvas"]:
+                for tool_name in ["SLACK_GET_THREAD", "slack_read_thread", "read_thread", "slack_read_channel", "read_channel", "slack_read_canvas"]:
                     try:
                         data = await client.call_tool(tool_name, {"id": item_id, "thread_ts": item_id, "channel_id": item_id})
                         if data:
@@ -330,11 +430,12 @@ class SlackConnector(BaseConnector):
             raise PermissionError("Permission denied: write mutation requires explicit approval")
 
         is_mcp_ready = bool((self.mcp_token and is_valid_credential_value(self.mcp_token)) or (self.bot_token and is_valid_credential_value(self.bot_token)))
+        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("slack"))
         if action in ("post_message", "send_message", "slack.post_message"):
             channel = params.get("channel", "general")
             text = params.get("text", "")
 
-            if self.mode == "remote_mcp" or is_mcp_ready:
+            if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
                 try:
                     from mcp_servers.remote_client import RemoteMCPClient
                     client = RemoteMCPClient(
@@ -342,7 +443,7 @@ class SlackConnector(BaseConnector):
                         endpoint_url=self.mcp_endpoint,
                         auth_token=self.mcp_token or self.user_token or self.bot_token,
                     )
-                    for tool_name in ["slack_send_message", "send_message", "chat_postMessage"]:
+                    for tool_name in ["SLACK_POST_MESSAGE", "slack_send_message", "send_message", "chat_postMessage"]:
                         try:
                             res = await client.call_tool(tool_name, {"channel_id": channel, "channel": channel, "message": text, "text": text})
                             if res and not (isinstance(res, dict) and (res.get("error") or res.get("is_error"))):

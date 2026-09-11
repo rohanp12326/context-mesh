@@ -113,6 +113,19 @@ class AppRouter:
 
         target_apps: Set[str] = set()
 
+        # App-specific priority when query explicitly targets a single platform
+        has_slack = "slack" in q or "canvas" in q or "runbook" in q or "channel" in q
+        has_gmail = "email" in q or "mail" in q or "inbox" in q
+        has_jira = "jira" in q or "atl-" in q or "ticket" in q or "tickets" in q or "bug" in q or "sprint" in q or "backlog" in q
+
+        # If user explicitly specifies a single platform without cross-app inquiry
+        if has_slack and not has_gmail and not has_jira and not any(k in q for k in ["opened tasks", "action item", "release", "blocker", "delay"]):
+            return ["slack"]
+        if has_gmail and not has_slack and not has_jira and not any(k in q for k in ["opened tasks", "action item", "release", "blocker", "delay"]):
+            return ["gmail"]
+        if has_jira and not has_slack and not has_gmail and not any(k in q for k in ["opened tasks", "action item", "decision"]):
+            return ["jira"]
+
         # Check Gmail keywords
         if any(k in words for k in GMAIL_KEYWORDS) or "email" in q or "mail" in q:
             target_apps.add("gmail")

@@ -30,13 +30,24 @@ class MemoryCreateRequest(BaseModel):
 
 
 class IntegrationConfigureRequest(BaseModel):
-    service: str  # zai | jira | slack | gmail
+    service: str  # zai | jira | slack | gmail | composio
     credentials: Dict[str, Any]
 
 
 class IntegrationTestRequest(BaseModel):
     service: str
     credentials: Dict[str, Any]
+
+
+class ComposioLinkRequest(BaseModel):
+    toolkit: str  # jira | slack | gmail
+    user_id: str = "default_user"
+    callback_url: Optional[str] = None
+
+
+class ComposioStatusRequest(BaseModel):
+    toolkit: Optional[str] = None
+    user_id: str = "default_user"
 
 
 class HealthResponse(BaseModel):

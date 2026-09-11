@@ -253,10 +253,69 @@ async def verify_mcp_connection(
         return False, f"MCP connection to {clean_url} failed: {str(e)}", latency
 
 
+async def verify_composio_connection(
+    api_key: str,
+    base_url: str = "https://backend.composio.dev/api/v3.1"
+) -> Tuple[bool, str, float]:
+    """Test Composio API Key connectivity."""
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        return False, "Composio API Key cannot be empty.", 0.0
+
+    clean_url = (base_url or "https://backend.composio.dev/api/v3.1").strip().rstrip("/")
+    url = f"{clean_url}/connected_accounts"
+    headers = {
+        "x-api-key": clean_key,
+        "Accept": "application/json",
+    }
+
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            latency = round((time.time() - start) * 1000.0, 2)
+            if resp.status_code == 200:
+                data = resp.json()
+                count = len(data.get("items") or data.get("connected_accounts") or (data if isinstance(data, list) else []))
+                return True, f"Successfully connected to Composio! ({count} connected accounts found, {latency}ms)", latency
+            elif resp.status_code == 401:
+                return False, "Authentication failed (401): Invalid Composio API Key.", latency
+            elif resp.status_code == 403:
+                return False, "Forbidden (403): Account suspended or lacks permission.", latency
+            else:
+                return False, f"Composio API error ({resp.status_code}): {resp.text[:120]}", latency
+    except Exception as e:
+        latency = round((time.time() - start) * 1000.0, 2)
+        return False, f"Could not connect to Composio endpoint: {str(e)}", latency
+
+
+async def verify_composio_app_connection(
+    toolkit: str,
+    user_id: Optional[str] = None,
+    api_key: Optional[str] = None
+) -> Tuple[bool, str, float]:
+    """Test if a specific application (Jira, Slack, Gmail) is authenticated in Composio."""
+    start = time.time()
+    try:
+        from mcp_servers.composio_client import ComposioMCPClient
+        client = ComposioMCPClient(api_key=api_key, user_id=user_id)
+        effective_user_id = client.user_id
+        is_conn, acc_id = await client.check_connection_status(toolkit, user_id=effective_user_id)
+        latency = round((time.time() - start) * 1000.0, 2)
+        if is_conn:
+            return True, f"Verified: {toolkit.capitalize()} is actively connected via Composio (Account ID: {acc_id})!", latency
+        return False, f"{toolkit.capitalize()} is not currently connected in Composio (User: {effective_user_id}). Click 'Connect via Composio' to authenticate.", latency
+    except Exception as e:
+        latency = round((time.time() - start) * 1000.0, 2)
+        return False, f"Failed to check {toolkit.capitalize()} connection: {str(e)}", latency
+
+
 # Aliases
 test_zai_connection = verify_zai_connection
 test_jira_connection = verify_jira_connection
 test_slack_connection = verify_slack_connection
 test_gmail_connection = verify_gmail_connection
 test_mcp_connection = verify_mcp_connection
+test_composio_connection = verify_composio_connection
+test_composio_app_connection = verify_composio_app_connection
 

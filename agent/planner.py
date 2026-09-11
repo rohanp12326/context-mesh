@@ -10,39 +10,37 @@ from agent.router import AppRouter
 from memory.long_term import LongTermMemoryStore
 
 
-PLANNER_SYSTEM_PROMPT = """You are the Lead Query Planner for ContextMesh, an AI engineering intelligence assistant.
-Your goal is to decompose the user's question into an optimal, typed execution plan using Jira, Slack, and Gmail tools.
+PLANNER_SYSTEM_PROMPT = """You are the Lead Autonomous Query Planner for ContextMesh, an AI engineering intelligence assistant.
+Your goal is to inspect the user's natural language request and synthesize an optimal, typed execution plan using available enterprise tools.
 
 Available Tools:
-- jira.search_issues(query: str, limit: int): Search issues by JQL (e.g. 'project = ATL AND statusCategory != Done') or keyword.
+- jira.search_issues(query: str, limit: int): Search issues by JQL (e.g. 'statusCategory != Done' or 'project = ATL') or search terms.
 - jira.get_issue(issue_key: str): Fetch specific Jira issue details.
-- jira.create_issue(project: str, summary: str, description: str, priority: str): Create Jira issue (MUTATION - requires approval).
-- slack.search_messages(query: str, limit: int): Search Slack messages, channels, discussions, and canvases.
+- jira.create_issue(project: str, summary: str, description: str, priority: str): Create Jira issue (MUTATION - requires approval). Set arguments dynamically based on user request.
+- slack.search_messages(query: str, limit: int): Search Slack messages, channels, discussions, and canvases. IMPORTANT: If user asks for latest, recent, or general messages without a specific keyword, use '*' as the query to retrieve all recent messages.
 - slack.get_thread(thread_id: str): Fetch full Slack thread messages.
 - slack.post_message(channel: str, text: str): Post message to a Slack channel (MUTATION - requires approval).
-- gmail.search_messages(query: str, limit: int): Search email threads (e.g. 'subject/commitments newer_than:30d').
-- gmail.get_thread(thread_id: str): Fetch full thread messages.
+- gmail.search_messages(query: str, limit: int): Search email threads (e.g. 'newer_than:30d' or keyword).
+- gmail.get_thread(thread_id: str): Fetch full email thread messages.
 
-Tool Selection & Routing Rules:
+Autonomous Planning Rules:
 1. Zero-Tool Queries: If the query is general knowledge (e.g. "who is the president of america", "how to setup windows 11"), programming trivia, or conversational chit-chat, set "user_intent": "direct_answer" and "steps": []. Do NOT call enterprise tools.
-2. Email Queries: If the query asks about emails, mails, or inbox messages (e.g. "what are my recent mails"), select ONLY Gmail tools.
-3. Closed Task & Ticket Queries: If the query asks about closed tasks, done tasks, resolved issues, tickets, bugs, or blockers (e.g. "what are my closed tasks", "show completed issues"), select ONLY Jira tools. Jira is the definitive source of truth for task statuses and resolutions. Use JQL: statusCategory = Done or status in (Done, Closed).
-4. Opened Tasks & Action Items: If the query asks about open tasks or action items in notes or chats (e.g. "what are my opened tasks"), select Jira and Slack tools.
-5. Issue/Ticket Queries: If the query asks about Jira issues, tickets, bugs, or blockers, select ONLY Jira tools.
-6. Documentation & Channel Queries: If the query asks about runbooks, specs, canvases, or Slack discussions, select ONLY Slack tools.
-7. Cross-Tool Queries: Select multiple tools ONLY when the inquiry requires cross-system correlation.
+2. Single-App Focus: If the query asks about a specific application (e.g. "what is my latest slack messages" -> Slack; "what are my recent mails" -> Gmail; "what are my closed tasks" -> Jira), select ONLY tools for that application.
+3. Multi-App / Cross-Tool: If the query inquires about tasks across tools ("what are my opened tasks"), select both Jira and Slack. If checking launch blockers or cross-team updates across mail and chats, select relevant tools.
+4. Specific vs Recency Slack Queries: For keyword searches (e.g. "Jira board", "deployment"), search that keyword. For inquiries asking for latest/recent messages without specific text keywords, use query: "*".
 
 Output strictly valid JSON matching this schema:
 {
   "user_intent": "<short_intent_slug>",
+  "reasoning": "<why you chose these tools and parameters>",
   "entities": {"project": "...", "person": "..."},
   "steps": [
     {
       "id": "s1",
-      "tool": "jira.search_issues",
-      "query": "...",
-      "purpose": "...",
-      "arguments": {"query": "...", "limit": 10},
+      "tool": "slack.search_messages",
+      "query": "*",
+      "purpose": "Fetch recent messages across Slack channels",
+      "arguments": {"query": "*", "limit": 10},
       "depends_on": []
     }
   ]
@@ -111,12 +109,15 @@ Generate the query execution plan in strict JSON.
 
         # Parse JSON
         try:
-            # Extract JSON block if wrapped in markdown
-            json_match = re.search(r"\{.*\}", raw_output, re.DOTALL)
+            cleaned = raw_output.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
             if json_match:
                 parsed = json.loads(json_match.group(0))
             else:
-                parsed = json.loads(raw_output)
+                parsed = json.loads(cleaned)
 
             steps: List[PlanStep] = []
             for s in parsed.get("steps", []):
@@ -165,45 +166,75 @@ Generate the query execution plan in strict JSON.
             fallback_steps: List[PlanStep] = []
             q_low = user_query.lower()
 
-            if "jira" in target_apps:
-                j_q = f"project = {entities.get('jira_project', 'ATL')}" if ("project" in entities or "atlas" in q_low) else ""
-                if any(w in q_low for w in ["closed", "done", "resolved", "completed"]):
-                    clause = "statusCategory = Done"
-                    j_q = f"{j_q} AND {clause}".strip(" AND ") if j_q else clause
-                elif any(w in q_low for w in ["open", "opened", "pending", "unresolved"]):
-                    clause = "statusCategory != Done"
-                    j_q = f"{j_q} AND {clause}".strip(" AND ") if j_q else clause
+            # Handle mutation requests (e.g. create task/issue)
+            if any(w in q_low for w in ["create", "open", "file", "add"]) and any(w in q_low for w in ["task", "ticket", "issue", "bug"]):
+                summary = re.sub(r"^(create|add|open|make|file)\s+(a\s+)?(new\s+)?(jira\s+)?(ticket|task|issue|bug)\s+(for|to|about)?\s*", "", user_query, flags=re.IGNORECASE).strip()
+                summary = summary or "New Task"
+                priority = "High" if "high" in q_low else ("Critical" if "critical" in q_low else "Medium")
+                proj = entities.get("jira_project", "ATL")
                 fallback_steps.append(
                     PlanStep(
-                        id=f"s{len(fallback_steps)+1}",
-                        tool="jira.search_issues",
-                        query=j_q,
-                        purpose="Search related Jira issues" if "closed" not in q_low else "Search closed Jira tasks",
-                        arguments={"query": j_q, "limit": 10}
+                        id="s1",
+                        tool="jira.create_issue",
+                        query=f"project = {proj}",
+                        purpose=f"Create Jira ticket: {summary}",
+                        arguments={
+                            "project": proj,
+                            "summary": summary,
+                            "description": user_query,
+                            "priority": priority
+                        }
                     )
                 )
-            if "slack" in target_apps:
-                s_q = "Atlas launch plan spec" if ("spec" in q_low or "plan" in q_low) else ("open tasks action items" if "task" in q_low else ("Atlas" if "atlas" in q_low else ""))
-                fallback_steps.append(
-                    PlanStep(
-                        id=f"s{len(fallback_steps)+1}",
-                        tool="slack.search_messages",
-                        query=s_q,
-                        purpose="Search related Slack communications and canvases",
-                        arguments={"query": s_q, "limit": 5}
+
+            if not fallback_steps:
+                if "jira" in target_apps:
+                    j_q = f"project = {entities.get('jira_project', 'ATL')}" if ("project" in entities or "atlas" in q_low) else ""
+                    if any(w in q_low for w in ["closed", "done", "resolved", "completed"]):
+                        clause = "statusCategory = Done"
+                        j_q = f"{j_q} AND {clause}".strip(" AND ") if j_q else clause
+                    elif any(w in q_low for w in ["open", "opened", "pending", "unresolved"]):
+                        clause = "statusCategory != Done"
+                        j_q = f"{j_q} AND {clause}".strip(" AND ") if j_q else clause
+                    fallback_steps.append(
+                        PlanStep(
+                            id=f"s{len(fallback_steps)+1}",
+                            tool="jira.search_issues",
+                            query=j_q,
+                            purpose="Search related Jira issues" if "closed" not in q_low else "Search closed Jira tasks",
+                            arguments={"query": j_q, "limit": 10}
+                        )
                     )
-                )
-            if "gmail" in target_apps:
-                g_q = "Atlas" if "atlas" in q_low else ""
-                fallback_steps.append(
-                    PlanStep(
-                        id=f"s{len(fallback_steps)+1}",
-                        tool="gmail.search_messages",
-                        query=g_q,
-                        purpose="Search related email communications",
-                        arguments={"query": g_q, "limit": 10}
+                if "slack" in target_apps:
+                    # If specific topic mentioned, use it; otherwise wildcard * for latest/recent messages
+                    if "spec" in q_low or "plan" in q_low:
+                        s_q = "Atlas launch plan spec" if "atlas" in q_low else "launch plan spec"
+                    elif "task" in q_low or "action item" in q_low:
+                        s_q = "open tasks action items"
+                    elif "atlas" in q_low:
+                        s_q = "Atlas"
+                    else:
+                        s_q = "*"
+                    fallback_steps.append(
+                        PlanStep(
+                            id=f"s{len(fallback_steps)+1}",
+                            tool="slack.search_messages",
+                            query=s_q,
+                            purpose="Search related Slack communications and canvases",
+                            arguments={"query": s_q, "limit": 5}
+                        )
                     )
-                )
+                if "gmail" in target_apps:
+                    g_q = "Atlas" if "atlas" in q_low else ("from:priya OR from:marcus" if ("priya" in q_low or "marcus" in q_low) else "")
+                    fallback_steps.append(
+                        PlanStep(
+                            id=f"s{len(fallback_steps)+1}",
+                            tool="gmail.search_messages",
+                            query=g_q,
+                            purpose="Search related email communications",
+                            arguments={"query": g_q, "limit": 10}
+                        )
+                    )
 
             risk_level, requires_approval, _ = PolicyEngine.classify_risk(user_query, fallback_steps)
             return QueryPlan(

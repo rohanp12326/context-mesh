@@ -1,5 +1,6 @@
 """ZAI GLM API client with OpenAI-compatible interface and deterministic offline mock fallback."""
 
+import asyncio
 import json
 import os
 import re
@@ -49,7 +50,7 @@ class ZAIClient:
         if self._explicit_model:
             return self._explicit_model
         vault_creds = VAULT.get_credential("zai")
-        return vault_creds.get("model") or os.getenv("ZAI_MODEL") or "glm-4.5-air"
+        return vault_creds.get("model") or os.getenv("ZAI_MODEL") or "glm-4-plus"
 
     @property
     def is_live(self) -> bool:
@@ -69,7 +70,6 @@ class ZAIClient:
 
         target_model = self.model
         target_url = f"{self.base_url}/chat/completions"
-        logger.info(f"ZAIClient: Sending request to {target_model} via {target_url} (messages={len(messages)})")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -83,27 +83,37 @@ class ZAIClient:
         if response_format:
             payload["response_format"] = response_format
 
-        start_t = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(
-                    target_url,
-                    json=payload,
-                    headers=headers
-                )
-                resp.raise_for_status()
+        max_attempts = 2
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            start_t = time.time()
+            logger.info(f"ZAIClient: Sending request to {target_model} via {target_url} (attempt={attempt}/{max_attempts}, messages={len(messages)})")
+            try:
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    resp = await client.post(
+                        target_url,
+                        json=payload,
+                        headers=headers
+                    )
+                    resp.raise_for_status()
+                    latency = round((time.time() - start_t) * 1000, 2)
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    logger.info(f"ZAIClient: Received response from {target_model} in {latency}ms ({len(content)} chars)")
+                    return content.strip()
+            except Exception as e:
+                last_error = e
                 latency = round((time.time() - start_t) * 1000, 2)
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                logger.info(f"ZAIClient: Received response from {target_model} in {latency}ms ({len(content)} chars)")
-                return content
-        except Exception as e:
-            latency = round((time.time() - start_t) * 1000, 2)
-            logger.warning(
-                f"ZAIClient: Live call to {target_model} failed after {latency}ms: {e}. "
-                "Falling back to deterministic offline generator."
-            )
-            return self._mock_generate(messages)
+                logger.warning(f"ZAIClient: Attempt {attempt} to {target_model} failed after {latency}ms: {e}")
+                if attempt < max_attempts:
+                    await asyncio.sleep(1.0)
+
+        logger.warning(
+            f"ZAIClient: All {max_attempts} attempts to {target_model} failed ({last_error}). "
+            "Falling back to deterministic offline generator."
+        )
+        return self._mock_generate(messages)
 
     def _mock_generate(self, messages: List[Dict[str, str]]) -> str:
         """Deterministic mock reasoning for offline benchmark verification."""

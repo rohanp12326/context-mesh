@@ -131,13 +131,20 @@ with st.sidebar:
         st.info("ℹ️ **ZAI GLM (Mock Fallback)**\nConfigure in Auth tab")
 
     st.markdown("---")
-    st.markdown("### 🔌 Connected Systems")
+    col_conn_h, col_conn_b = st.columns([3, 1])
+    with col_conn_h:
+        st.markdown("### 🔌 Connected Systems")
+    with col_conn_b:
+        if st.button("🔄", help="Sync live authentication status from Composio", key="btn_sidebar_sync"):
+            _vault().sync_composio_connections()
+            st.rerun()
+
     for svc_name in ["jira", "slack", "gmail"]:
         svc = services_status[svc_name]
-        is_conn = svc["is_configured"]
+        is_conn = svc["is_configured"] or _vault().is_service_authenticated(svc_name)
         svc_mode = svc.get("mode", "mock")
         icon = "🟢" if is_conn else "⚪"
-        mode_tag = "Live API" if (is_conn and svc_mode == "live") else "Demo Data"
+        mode_tag = "Live API" if (is_conn and svc_mode == "live") else ("Connected" if is_conn else "Demo Data")
         st.markdown(f"{icon} **{svc_name.upper()}**: {mode_tag}")
 
     st.markdown("---")
@@ -222,91 +229,77 @@ with tab_chat:
 
             for idx, svc in enumerate(missing_svcs):
                 with tabs_auth[idx]:
-                    if svc == "jira":
-                        st.markdown("#### 📌 Connect Atlassian Jira")
-                        st.link_button("🔗 Open Atlassian API Token Page", "https://id.atlassian.com/manage-profile/security/api-tokens", use_container_width=True)
-                        st.info(
-                            "**How to get your Jira API Token (30 seconds):**\n\n"
-                            "1. Click the button above to open Atlassian Security.\n"
-                            "2. Click **Create API token**, label it `ContextMesh`, and copy the token.\n"
-                            "3. Enter your Jira URL (e.g. `https://your-company.atlassian.net`), email, and token below."
-                        )
-                        j_url = st.text_input("Jira URL", placeholder="https://your-company.atlassian.net", key="jit_jira_url")
-                        j_email = st.text_input("User Email", placeholder="you@company.com", key="jit_jira_email")
-                        j_token = st.text_input("Atlassian API Token", type="password", placeholder="ATATT3xFfGF0...", key="jit_jira_token")
-                        if st.button("⚡ Test & Connect Jira", key="btn_jit_jira"):
-                            with st.spinner("Verifying Jira connection..."):
-                                ok, msg, _ = asyncio.run(test_jira_connection(j_url, j_email, j_token))
+                    st.markdown(f"#### ⚡ Connect {svc.upper()} via Composio")
+                    st.caption("Authenticate with 1-click official OAuth in your browser—no manual tokens required.")
+
+                    col_jit_a, col_jit_b = st.columns(2)
+                    with col_jit_a:
+                        if st.button(f"🔗 Generate {svc.upper()} Connect Link", key=f"btn_jit_gen_{svc}"):
+                            from mcp_servers.composio_client import COMPOSIO_CLIENT
+                            try:
+                                url = asyncio.run(COMPOSIO_CLIENT.get_auth_url(svc))
+                                st.session_state[f"jit_{svc}_url"] = url
+                                st.success("OAuth connect link generated!")
+                            except Exception as e:
+                                st.error(f"Error generating link: {e}")
+
+                    if st.session_state.get(f"jit_{svc}_url"):
+                        st.link_button(f"👉 Authorize {svc.upper()} in Browser", st.session_state[f"jit_{svc}_url"], type="primary", use_container_width=True)
+
+                    with col_jit_b:
+                        if st.button(f"🔄 Verify {svc.upper()} Status & Proceed", key=f"btn_jit_check_{svc}"):
+                            from security.connection_testers import test_composio_app_connection
+                            with st.spinner(f"Verifying {svc.upper()} connection..."):
+                                ok, msg, _ = asyncio.run(test_composio_app_connection(svc))
                                 if ok:
-                                    _vault().set_credential("jira", {"base_url": j_url, "user_email": j_email, "api_token": j_token})
+                                    _vault().set_credential(svc, {"auth_type": "composio", "composio_connected": True})
                                     st.success(f"✅ {msg}")
+                                    st.session_state.pending_auth = None
                                     st.rerun()
                                 else:
-                                    st.error(f"❌ {msg}")
+                                    st.warning(f"⚠️ {msg}")
 
-                    elif svc == "slack":
-                        st.markdown("#### 💬 Connect Slack Integration")
-                        st.link_button("🔗 Open Slack API Apps Console", "https://api.slack.com/apps", use_container_width=True)
-                        st.info(
-                            "**How to get your Slack Token (1 minute):**\n\n"
-                            "1. Click the button above to open Slack's App console.\n"
-                            "2. Create or select your `ContextMesh` app in your workspace.\n"
-                            "3. Under **OAuth & Permissions**, copy your Bot User Token (`xoxb-...`) or User Token (`xoxp-...`)."
-                        )
-                        s_token = st.text_input("Slack Bot/User Token", type="password", placeholder="xoxb-... or xoxp-...", key="jit_slack_token")
-                        if st.button("⚡ Test & Connect Slack", key="btn_jit_slack"):
-                            with st.spinner("Verifying Slack connection..."):
-                                ok, msg, _ = asyncio.run(test_slack_connection(s_token))
-                                if ok:
-                                    token_field = "user_token" if s_token.startswith("xoxp-") else "bot_token"
-                                    _vault().set_credential("slack", {token_field: s_token.strip()})
-                                    st.success(f"✅ {msg}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {msg}")
-
-                    elif svc == "gmail":
-                        st.markdown("#### 📧 Connect Gmail")
-                        gm_auth_mode = st.radio("Gmail Auth Method", ["Google App Password (16 chars)", "OAuth2 Bearer Token"], horizontal=True, key="jit_gm_mode")
-
-                        if "App Password" in gm_auth_mode:
-                            st.link_button("🔗 Open Google App Passwords Page", "https://myaccount.google.com/apppasswords", use_container_width=True)
-                            st.info(
-                                "**How to get a Google App Password (Fastest & Easiest):**\n\n"
-                                "1. Click **Open Google App Passwords Page** above.\n"
-                                "2. If prompted, sign in with your Google account. *(Requires 2-Step Verification enabled)*.\n"
-                                "3. Type an app name (e.g. `ContextMesh`) and click **Create**.\n"
-                                "4. Copy the **16-letter password** (e.g. `xxxx xxxx xxxx xxxx`) and paste it below."
-                            )
+                    with st.expander(f"⚙️ Or use legacy manual credentials for {svc.upper()}", expanded=False):
+                        if svc == "jira":
+                            j_url = st.text_input("Jira URL", placeholder="https://your-company.atlassian.net", key="jit_jira_url")
+                            j_email = st.text_input("User Email", placeholder="you@company.com", key="jit_jira_email")
+                            j_token = st.text_input("Atlassian API Token", type="password", placeholder="ATATT3xFfGF0...", key="jit_jira_token")
+                            if st.button("⚡ Test & Connect Jira Manually", key="btn_jit_jira"):
+                                with st.spinner("Verifying Jira connection..."):
+                                    ok, msg, _ = asyncio.run(test_jira_connection(j_url, j_email, j_token))
+                                    if ok:
+                                        _vault().set_credential("jira", {"base_url": j_url, "user_email": j_email, "api_token": j_token, "auth_type": "token"})
+                                        st.success(f"✅ {msg}")
+                                        st.session_state.pending_auth = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {msg}")
+                        elif svc == "slack":
+                            s_token = st.text_input("Slack Bot/User Token", type="password", placeholder="xoxb-... or xoxp-...", key="jit_slack_token")
+                            if st.button("⚡ Test & Connect Slack Manually", key="btn_jit_slack"):
+                                with st.spinner("Verifying Slack connection..."):
+                                    ok, msg, _ = asyncio.run(test_slack_connection(s_token))
+                                    if ok:
+                                        token_field = "user_token" if s_token.startswith("xoxp-") else "bot_token"
+                                        _vault().set_credential("slack", {token_field: s_token.strip(), "auth_type": "token"})
+                                        st.success(f"✅ {msg}")
+                                        st.session_state.pending_auth = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {msg}")
+                        elif svc == "gmail":
                             gm_email = st.text_input("Gmail Address", placeholder="you@company.com", key="jit_gm_email")
                             gm_pw = st.text_input("16-character App Password", type="password", placeholder="xxxx xxxx xxxx xxxx", key="jit_gm_pw")
-                            gm_tok = None
-                        else:
-                            st.link_button("🔗 Open Google OAuth2 Playground", "https://developers.google.com/oauthplayground", use_container_width=True)
-                            st.info(
-                                "**For Technical Users / Developers:**\n\n"
-                                "1. Click the button above to open Google OAuth2 Playground.\n"
-                                "2. Select `https://mail.google.com/` scope, authorize, and exchange the code for tokens.\n"
-                                "3. Copy the `ya29.a0...` Access Token and paste it below."
-                            )
-                            gm_email = st.text_input("Gmail Address", placeholder="you@company.com", key="jit_gm_email")
-                            gm_tok = st.text_input("OAuth2 Access Token", type="password", placeholder="ya29.a0...", key="jit_gm_tok")
-                            gm_pw = None
-
-                        if st.button("⚡ Test & Connect Gmail", key="btn_jit_gmail"):
-                            with st.spinner("Verifying Gmail connection..."):
-                                ok, msg, _ = asyncio.run(test_gmail_connection(gm_email, gm_pw, gm_tok))
-                                if ok:
-                                    data = {"account": gm_email}
-                                    if gm_pw:
-                                        data["app_password"] = gm_pw
-                                    if gm_tok:
-                                        data["access_token"] = gm_tok
-                                    _vault().set_credential("gmail", data)
-                                    st.success(f"✅ {msg}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {msg}")
+                            if st.button("⚡ Test & Connect Gmail Manually", key="btn_jit_gmail"):
+                                with st.spinner("Verifying Gmail connection..."):
+                                    ok, msg, _ = asyncio.run(test_gmail_connection(gm_email, gm_pw))
+                                    if ok:
+                                        _vault().set_credential("gmail", {"account": gm_email, "app_password": gm_pw, "auth_type": "app_password"})
+                                        st.success(f"✅ {msg}")
+                                        st.session_state.pending_auth = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {msg}")
 
                     if connected_svcs:
                         st.markdown("---")

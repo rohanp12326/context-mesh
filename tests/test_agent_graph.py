@@ -82,8 +82,11 @@ def test_agent_response_coercion():
 
 
 @pytest.mark.asyncio
-async def test_agent_closed_tasks_jira_only_no_slack_auth():
+async def test_agent_closed_tasks_jira_only_no_slack_auth(monkeypatch):
     """Verify that asking for closed tasks targets Jira only and never triggers Slack auth."""
+    from security.vault import VAULT
+    monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: svc == "jira")
+
     agent = ContextMeshAgent()
     query = "what are my closed tasks"
 
