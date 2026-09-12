@@ -117,8 +117,7 @@ class RemoteMCPClient:
         except Exception as e:
             logger.debug(f"SSE transport failed for {self.endpoint_url}: {e}. Retrying with Streamable HTTP.")
             try:
-                import httpx2
-                async with httpx2.AsyncClient(headers=self.headers, timeout=self.timeout) as http_client:
+                async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as http_client:
                     async with streamable_http_client(self.endpoint_url, http_client=http_client) as (read_stream, write_stream):
                         async with ClientSession(read_stream, write_stream) as session:
                             await session.initialize()
@@ -148,8 +147,7 @@ class RemoteMCPClient:
         except Exception as e:
             logger.debug(f"SSE call failed: {e}. Retrying via Streamable HTTP transport.")
             try:
-                import httpx2
-                async with httpx2.AsyncClient(headers=self.headers, timeout=self.timeout) as http_client:
+                async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as http_client:
                     async with streamable_http_client(self.endpoint_url, http_client=http_client) as (read_stream, write_stream):
                         async with ClientSession(read_stream, write_stream) as session:
                             await session.initialize()

@@ -13,9 +13,14 @@ Answer the user's question accurately using ONLY the provided evidence.
 
 Requirements:
 1. Ground every substantive claim in one or more evidence items using bracket notation like [jira:ATL-101], [slack:slack-msg-01], or [gmail:gmail-th-01].
-2. Point out conflicts or date discrepancies between systems (e.g. if Slack says Sept 10 but Email says Sept 18).
-3. Specify who owns blockers and what commitments were made with exact quotes/dates.
-4. If something is unknown or missing from evidence, state that plainly.
+2. Verify message authorship and directionality:
+   - When asked if someone (e.g. Person X) sent a message or communicated with the user, carefully check the 'Author' field of each evidence item.
+   - Do NOT attribute messages addressed TO Person X (e.g., messages starting with "Hey X..." sent by someone else) as being sent BY Person X.
+   - Distinguish incoming communications (authored by others to the user) from outgoing communications (authored by the user/requester to others).
+   - If the retrieved evidence only contains outgoing messages sent TO Person X, clearly state that no messages FROM Person X were found, but note the outgoing message sent to them.
+3. Point out conflicts or date discrepancies between systems (e.g. if Slack says Sept 10 but Email says Sept 18).
+4. Specify who owns blockers and what commitments were made with exact quotes/dates.
+5. If something is unknown or missing from evidence, state that plainly.
 """
 
 
@@ -84,12 +89,23 @@ class AnswerSynthesizer:
         plan: QueryPlan,
         evidence: List[Evidence],
         contradictions: List[Contradiction],
-        trace_id: Optional[str] = None
+        trace_id: Optional[str] = None,
+        tool_failures: Optional[List[Dict[str, Any]]] = None
     ) -> AgentResponse:
         """Compose final cited answer."""
         if not evidence:
+            if tool_failures:
+                fail_details = "\n".join(f"- **{f.get('tool', 'tool')}**: {f.get('error', 'unknown error')}" for f in tool_failures)
+                msg = (
+                    "⚠️ Unable to retrieve data due to issues connecting to enterprise services:\n"
+                    f"{fail_details}\n\n"
+                    "Please check your service credentials or integration settings."
+                )
+            else:
+                msg = "No relevant evidence was found across Jira, Slack, or Gmail to answer your request."
+
             return AgentResponse(
-                answer="No relevant evidence was found across Jira, Slack, or Gmail to answer your request.",
+                answer=msg,
                 citations=[],
                 confidence=0.1,
                 plan=plan,
@@ -156,10 +172,14 @@ class AnswerSynthesizer:
                     )
                 )
 
+        # Dynamic confidence score based on evidence volume, freshness, and absence of unresolved contradictions
+        fresh_count = sum(1 for e in evidence if not e.is_stale)
+        confidence = min(0.98, max(0.40, 0.70 + (len(evidence) * 0.04) + (fresh_count * 0.02) - (len(contradictions) * 0.05)))
+
         return AgentResponse(
             answer=raw_answer,
             citations=citations,
-            confidence=0.92,
+            confidence=round(confidence, 2),
             plan=plan,
             contradictions=contradictions,
             trace_id=trace_id
@@ -208,7 +228,8 @@ class AnswerSynthesizer:
         if slack_items:
             parts.append("\n### Relevant Slack Discussions & Canvases")
             for si in slack_items:
-                parts.append(f"- **{si.title}**: {si.content[:180]}... [slack:{si.source_object_id}]")
+                author_str = f" ({si.author})" if si.author else ""
+                parts.append(f"- **{si.title}**{author_str}: {si.content[:180]}... [slack:{si.source_object_id}]")
 
         # Include contradictions if any
         if contradictions:

@@ -63,15 +63,15 @@ async def jira_get_issue(issue_key: str) -> str:
 
 @server.tool(
     name="jira_create_issue",
-    description="Create a new Jira issue/task. Requires project key and summary."
+    description="Create a new Jira issue/task. MUTATION OPERATION: requires explicit human approval (approved=True)."
 )
-async def jira_create_issue(project: str, summary: str, description: str = "", priority: str = "Medium") -> str:
+async def jira_create_issue(project: str, summary: str, description: str = "", priority: str = "Medium", approved: bool = False) -> str:
     """Create Jira issue (mutation operation)."""
     call = MCPToolCall(
         tool_name="jira.create_issue",
         arguments={"project": project, "summary": summary, "description": description, "priority": priority}
     )
-    scope = PermissionScope(user_id="mcp_client", can_mutate=True, allowed_scopes=["write:jira"])
+    scope = PermissionScope(user_id="mcp_client", can_mutate=approved, allowed_scopes=["write:jira"])
     res = await registry.execute_tool(call, scope=scope)
     if not res.success:
         return f"Error: {res.error}"
@@ -106,12 +106,12 @@ async def slack_get_thread(thread_id: str) -> str:
 
 @server.tool(
     name="slack_post_message",
-    description="Post a message to a Slack channel (mutation operation)."
+    description="Post a message to a Slack channel (MUTATION OPERATION: requires explicit human approval (approved=True))."
 )
-async def slack_post_message(channel: str, text: str) -> str:
+async def slack_post_message(channel: str, text: str, approved: bool = False) -> str:
     """Post message to Slack channel."""
     call = MCPToolCall(tool_name="slack.post_message", arguments={"channel": channel, "text": text})
-    scope = PermissionScope(user_id="mcp_client", can_mutate=True, allowed_scopes=["write:slack"])
+    scope = PermissionScope(user_id="mcp_client", can_mutate=approved, allowed_scopes=["write:slack"])
     res = await registry.execute_tool(call, scope=scope)
     if not res.success:
         return f"Error: {res.error}"

@@ -1,7 +1,6 @@
-"""Freshness assessment and contradiction detection across evidence."""
-
+import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel
 from retrieval.normalization import Evidence
 
@@ -45,48 +44,67 @@ def evaluate_freshness(evidence: Evidence, reference_time: Optional[datetime] = 
 
 
 def detect_contradictions(evidence_list: List[Evidence]) -> List[Contradiction]:
-    """Inspect retrieved multi-source evidence for factual conflicts (dates, statuses)."""
+    """Inspect retrieved multi-source evidence for factual conflicts (dates, statuses, undocumented decisions)."""
     contradictions: List[Contradiction] = []
+    if len(evidence_list) < 1:
+        return contradictions
+
+    # 1. Check for release/launch date discrepancies across sources
+    date_regex = re.compile(r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,?\s*\d{4})?", re.IGNORECASE)
     
-    # Check for release date / launch date conflicts (e.g. Slack spec vs Email thread)
-    slack_dates = []
-    email_dates = []
-    
+    release_evidence: List[Tuple[Evidence, List[str]]] = []
     for ev in evidence_list:
-        content_lower = ev.content.lower()
-        if ev.source == "slack" and ("september 10" in content_lower or "target release date" in content_lower):
-            slack_dates.append(ev)
-        if ev.source == "gmail" and ("postponing launch to sept 18" in content_lower or "delay the payments launch" in content_lower or "new target launch date is september 18" in content_lower):
-            email_dates.append(ev)
+        c_lower = ev.content.lower() + " " + ev.title.lower()
+        if any(term in c_lower for term in ["release", "launch", "target date", "deadline", "postpon"]):
+            found_dates = date_regex.findall(ev.content)
+            if found_dates:
+                release_evidence.append((ev, found_dates))
 
-    if slack_dates and email_dates:
-        contradictions.append(
-            Contradiction(
-                topic="Payments Launch Target Date",
-                description=(
-                    f"Slack specification ({slack_dates[0].evidence_id}) targets September 10, 2026, "
-                    f"but recent Gmail discussion ({email_dates[0].evidence_id}) announces a delay to September 18, 2026 due to Stripe webhook issues."
-                ),
-                conflicting_evidence_ids=[slack_dates[0].evidence_id, email_dates[0].evidence_id],
-                authoritative_source_id=email_dates[0].evidence_id,
-                resolution_suggestion="Prefer the newer Gmail stakeholder announcement; flag Slack specification as pending update."
-            )
-        )
+    # Compare pairs of evidence from different sources
+    for i in range(len(release_evidence)):
+        ev_a, dates_a = release_evidence[i]
+        for j in range(i + 1, len(release_evidence)):
+            ev_b, dates_b = release_evidence[j]
+            if ev_a.source != ev_b.source:
+                # Check if dates differ
+                norm_a = {d.lower().replace(",", "").strip() for d in dates_a}
+                norm_b = {d.lower().replace(",", "").strip() for d in dates_b}
+                if norm_a and norm_b and not norm_a.intersection(norm_b):
+                    # Identified date discrepancy
+                    c_all = (ev_a.title + " " + ev_a.content + " " + ev_b.title + " " + ev_b.content).lower()
+                    topic = "Payments Launch Target Date" if "payment" in c_all else "Project Release Target Date"
+                    # Authoritative source is typically the newer/live email or announcement
+                    authoritative = ev_b if (ev_b.source == "gmail" or (ev_b.updated_at or "") > (ev_a.updated_at or "")) else ev_a
+                    contradictions.append(
+                        Contradiction(
+                            topic=topic,
+                            description=(
+                                f"{ev_a.source.capitalize()} evidence ({ev_a.evidence_id}) references {', '.join(dates_a)}, "
+                                f"while {ev_b.source.capitalize()} evidence ({ev_b.evidence_id}) references {', '.join(dates_b)}."
+                            ),
+                            conflicting_evidence_ids=[ev_a.evidence_id, ev_b.evidence_id],
+                            authoritative_source_id=authoritative.evidence_id,
+                            resolution_suggestion=f"Prefer the newer {authoritative.source.capitalize()} stakeholder announcement; flag older specifications as pending update."
+                        )
+                    )
+                    break
+        if contradictions:
+            break
 
-    # Check for undocumented decisions in Slack
-    email_decisions = [ev for ev in evidence_list if ev.source == "gmail" and ("not been documented in slack" in ev.content.lower() or "never in slack" in ev.content.lower())]
-    if email_decisions:
-        for ed in email_decisions:
+    # 2. Check for undocumented decisions
+    for ev in evidence_list:
+        c_lower = ev.content.lower()
+        if any(pattern in c_lower for pattern in ["not been documented in slack", "never in slack", "not yet documented", "undocumented"]):
             contradictions.append(
                 Contradiction(
                     topic="Undocumented Architecture Decision",
                     description=(
-                        f"Email thread ({ed.evidence_id}) documents an active decision (e.g. Redis AES-256 encryption) "
-                        "that explicitly states it has not been documented in Slack architecture records."
+                        f"{ev.source.capitalize()} record ({ev.evidence_id}) documents an active decision "
+                        "that explicitly states it has not been documented in team workspace architecture records."
                     ),
-                    conflicting_evidence_ids=[ed.evidence_id],
-                    authoritative_source_id=ed.evidence_id,
-                    resolution_suggestion="Highlight that decision exists in email but Slack records require documentation."
+                    conflicting_evidence_ids=[ev.evidence_id],
+                    authoritative_source_id=ev.evidence_id,
+                    resolution_suggestion="Highlight that decision exists in communications but team workspace records require documentation."
                 )
             )
 

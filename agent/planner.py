@@ -56,25 +56,58 @@ class QueryPlanner:
         self.memory_store = memory_store or LongTermMemoryStore()
 
     def resolve_entities(self, query: str) -> Dict[str, str]:
-        """Lookup stored project aliases, usernames, and domains from long-term memory."""
+        """Lookup stored project aliases, usernames, and domains dynamically from long-term memory."""
         resolved: Dict[str, str] = {}
-        # Check for Atlas
-        if "atlas" in query.lower():
-            records = self.memory_store.search_by_entity("Atlas")
-            for r in records:
-                if r.type == "project_alias":
-                    resolved["project"] = "Atlas"
-                    resolved["jira_project"] = r.content.get("jira_project", "ATL")
-                    resolved["slack_channel"] = r.content.get("slack_channel", "proj-atlas-release")
-                    resolved["slack_canvas_id"] = r.content.get("slack_canvas_id", "slack-atlas-spec")
+        q_lower = query.lower()
 
-        # Check for people
-        if "priya" in query.lower():
-            resolved["person_priya"] = "priya.sharma@company.com"
-        if "marcus" in query.lower():
-            resolved["person_marcus"] = "marcus.vance@company.com"
+        # Dynamic project alias resolution
+        for record in self.memory_store.list_records():
+            if record.type == "project_alias":
+                alias_name = str(record.content.get("alias", "")).lower()
+                if alias_name and alias_name in q_lower:
+                    resolved["project"] = record.content.get("alias", "")
+                    for k, v in record.content.items():
+                        resolved[k] = str(v)
+            elif record.type == "role_mapping":
+                full_name = str(record.content.get("name", "")).lower()
+                first_name = full_name.split()[0] if full_name else ""
+                if (first_name and first_name in q_lower) or (full_name and full_name in q_lower):
+                    key_suffix = first_name or "person"
+                    resolved[f"person_{key_suffix}"] = record.content.get("email", "")
+                    resolved[f"role_{key_suffix}"] = record.content.get("domain", "")
+
+        # Keyword token search across entities for any words > 3 chars
+        tokens = re.findall(r"[a-zA-Z0-9_-]+", query)
+        for token in tokens:
+            if len(token) > 3 and token.lower() not in ("what", "show", "find", "check", "tasks", "task", "issues"):
+                records = self.memory_store.search_by_entity(token)
+                for r in records:
+                    if r.type == "project_alias" and "project" not in resolved:
+                        resolved["project"] = r.content.get("alias", token)
+                        for k, v in r.content.items():
+                            resolved[k] = str(v)
+                    elif r.type == "role_mapping":
+                        resolved[f"entity_{token.lower()}"] = str(r.content.get("email") or r.content.get("name"))
 
         return resolved
+
+    def build_memory_context(self, query: str) -> str:
+        """Format matching organizational memory into prompt context."""
+        resolved = self.resolve_entities(query)
+        lines = []
+        if resolved:
+            lines.append("Active Known Entities from Memory:")
+            for k, v in resolved.items():
+                lines.append(f"- {k}: {v}")
+
+        # Also list active project aliases
+        aliases = [r for r in self.memory_store.list_records() if r.type == "project_alias"]
+        if aliases:
+            lines.append("Known Project Aliases:")
+            for a in aliases:
+                lines.append(f"- Alias '{a.content.get('alias')}': Jira Project '{a.content.get('jira_project')}', Slack '{a.content.get('slack_channel')}'")
+
+        return "\n".join(lines) if lines else "No prior project memory for this query."
 
     async def plan(self, user_query: str) -> QueryPlan:
         """Decompose user query into typed execution plan."""
