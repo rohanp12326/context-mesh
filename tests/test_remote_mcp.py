@@ -200,8 +200,8 @@ async def test_slack_connector_remote_mcp_search():
 
 
 @pytest.mark.asyncio
-async def test_remote_mcp_error_fallback_to_mock():
-    """Verify connectors gracefully fall back if remote MCP endpoints fail."""
+async def test_remote_mcp_error_fallback_to_empty():
+    """Verify connectors gracefully return empty list if remote MCP endpoints fail and no fallback is configured."""
     connector = JiraConnector(
         mode="remote_mcp",
         mcp_token="broken-token"
@@ -209,11 +209,10 @@ async def test_remote_mcp_error_fallback_to_mock():
 
     # When remote MCP raises network / connection error
     with patch.object(RemoteMCPClient, "call_tool", side_effect=Exception("Connection timed out")):
-        # Should gracefully fall back to synthetic data rather than crash
+        # Should return empty list rather than fake synthetic data
         results = await connector.search("blocker", limit=5)
         assert isinstance(results, list)
-        # Should return synthetic items from mock data
-        assert len(results) > 0
+        assert len(results) == 0
 
 
 # =========================================================================

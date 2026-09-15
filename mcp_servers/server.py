@@ -1,8 +1,9 @@
 """Model Context Protocol (MCP) Standard Server for ContextMesh.
 
-Exposes enterprise tools (Jira, Slack, Gmail) and the high-level ContextMesh
-agent as a native Model Context Protocol server. External MCP clients (Claude Desktop,
-Cursor, Continue, Windsurf, VS Code) can connect over stdio or SSE.
+Exposes enterprise tools (Jira, Slack, Gmail), public web search, and the
+high-level ContextMesh agent as a native Model Context Protocol server.
+External MCP clients (Claude Desktop, Cursor, Continue, Windsurf, VS Code)
+can connect over stdio or SSE.
 
 Usage:
     # Run over stdio (standard for Claude Desktop / Cursor):
@@ -147,7 +148,7 @@ async def gmail_get_thread(thread_id: str) -> str:
 @server.tool(
     name="contextmesh_query",
     description=(
-        "Ask ContextMesh an enterprise question across Jira, Slack, and Gmail. "
+        "Ask ContextMesh an enterprise question across Jira, Slack, Gmail, and the web. "
         "Automatically decomposes query, retrieves cross-system evidence, detects "
         "contradictions, and generates cited answer."
     )
@@ -166,6 +167,19 @@ async def contextmesh_query(query: str, user_id: str = "mcp_user") -> str:
         "requires_approval": resp.requires_approval
     }
     return json.dumps(result, indent=2)
+
+
+@server.tool(
+    name="web_search",
+    description="Search the public web for current events, recent news, and live information."
+)
+async def web_search(query: str, limit: int = 5) -> str:
+    """Search the public web."""
+    call = MCPToolCall(tool_name="web.search", arguments={"query": query, "limit": limit})
+    res = await registry.execute_tool(call)
+    if not res.success:
+        return f"Error: {res.error}"
+    return json.dumps(res.data, indent=2)
 
 
 def main():

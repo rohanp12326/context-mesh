@@ -52,7 +52,7 @@ User / Streamlit UI / API
     │   ├── Jira MCP      (JQL search, issue details, create issue)
     │   ├── Slack MCP     (Message search, thread context, post message)
     │   └── Gmail MCP     (Thread search, message content)
-    └── Offline Fallback  (Project Atlas synthetic sandbox)
+    └── Direct Provider Connectors (Jira REST, Slack Web API, Gmail IMAP)
           │
           ▼
  Evidence Normalization & Freshness Resolution
@@ -199,7 +199,6 @@ context-mesh/
 │   └── redaction.py          # Automatic PII & secret scrubber
 ├── evals/                    # Evaluation & Datasets
 │   ├── datasets/
-│   │   ├── synthetic_atlas.json
 │   │   └── benchmark_questions.json
 │   ├── evaluators/metrics.py
 │   └── experiments/runner.py

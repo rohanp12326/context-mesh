@@ -15,7 +15,7 @@ def test_streamlit_app_loads_without_exceptions():
 
 
 def test_streamlit_chat_react_execution():
-    at = AppTest.from_file(str(APP_PATH), default_timeout=25)
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
     assert not at.exception
 

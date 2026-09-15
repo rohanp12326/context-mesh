@@ -10,7 +10,7 @@ from connectors.base import ConnectorItem
 class Evidence(BaseModel):
     """Normalized evidence record backing an agent conclusion."""
     evidence_id: str
-    source: Literal["jira", "slack", "gmail", "memory"]
+    source: Literal["jira", "slack", "gmail", "web", "memory"]
     source_object_id: str
     source_url: str
     title: str

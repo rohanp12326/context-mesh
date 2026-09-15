@@ -92,24 +92,50 @@ def test_sanitize_slack_query_generic():
 
 
 @pytest.mark.asyncio
-async def test_slack_mock_search_with_author():
-    """Verify mock Slack search matches author when searched directly or via from:."""
-    conn = SlackConnector(mode="mock")
+async def test_slack_live_search_with_author(monkeypatch):
+    """Verify Slack live search extracts and formats author appropriately."""
+    import httpx
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
 
-    # Search author by name
-    items_sarah = await conn.search("sarah")
-    assert len(items_sarah) > 0
-    assert any("sarah" in (it.author or "").lower() for it in items_sarah)
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
 
-    # Search via from: filter
-    items_from_priya = await conn.search("from:priya")
-    assert len(items_from_priya) > 0
-    assert all("priya" in (it.author or "").lower() for it in items_from_priya)
+    conn = SlackConnector(mode="live", bot_token="xoxb-fake")
 
-    # Search via in: channel filter
-    items_channel = await conn.search("in:architecture")
-    assert len(items_channel) > 0
-    assert all(it.metadata.get("channel") == "architecture" for it in items_channel)
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, *args, **kwargs):
+            class MockResp:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {
+                        "ok": True,
+                        "messages": {
+                            "matches": [
+                                {
+                                    "iid": "msg-123",
+                                    "text": "Hello team, here is the spec",
+                                    "username": "sarah.jenkins",
+                                    "ts": "1710000000.000",
+                                    "channel": {"id": "C1", "name": "general"}
+                                }
+                            ]
+                        }
+                    }
+            return MockResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    items = await conn.search("sarah", limit=5)
+    assert len(items) == 1
+    assert "sarah" in (items[0].author or "").lower()
 
 
 def test_synthesis_directionality_prompt():
@@ -120,9 +146,8 @@ def test_synthesis_directionality_prompt():
 
 
 def test_offline_synthesis_includes_author():
-    """Verify offline synthesis includes author name for Slack evidence."""
+    """Verify fallback synthesis includes author name for Slack evidence."""
     synthesizer = AnswerSynthesizer()
-    plan = QueryPlan(user_intent="test", steps=[], risk_level="low")
     evidence = [
         Evidence(
             evidence_id="slack:101",
@@ -136,5 +161,5 @@ def test_offline_synthesis_includes_author():
             raw_data={}
         )
     ]
-    res = synthesizer._offline_synthesize("does Monali have any message for me", evidence, [])
+    res = synthesizer._format_evidence_fallback("does Monali have any message for me", evidence, [])
     assert "Rohan Patil" in res

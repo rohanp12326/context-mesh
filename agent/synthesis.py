@@ -47,12 +47,13 @@ class AnswerSynthesizer:
         if self.llm.is_live:
             try:
                 answer = await self.llm.generate_chat(prompt, temperature=0.7)
-                if not answer or answer.startswith("Mock response"):
-                    answer = self._offline_synthesize_direct(query)
-            except Exception:
-                answer = self._offline_synthesize_direct(query)
+            except Exception as e:
+                logger.error(f"LLM direct synthesis failed: {e}")
+                raise RuntimeError(f"Failed to generate answer from LLM: {e}")
         else:
-            answer = self._offline_synthesize_direct(query)
+            raise RuntimeError(
+                "LLM is not configured. Please set ZAI_API_KEY in .secrets/vault or .env to run real reasoning."
+            )
 
         return AgentResponse(
             answer=answer,
@@ -63,25 +64,6 @@ class AnswerSynthesizer:
             requires_approval=False,
             auth_required=False
         )
-
-    def _offline_synthesize_direct(self, query: str) -> str:
-        """Deterministic offline responses for general knowledge benchmarks and testing."""
-        q_lower = query.lower()
-        if "president of" in q_lower:
-            return "The President of the United States is Joe Biden, serving as the 46th president since January 20, 2021."
-        if "windows 11" in q_lower:
-            return (
-                "### How to Set Up Windows 11:\n"
-                "1. **Check Compatibility**: Verify your PC has TPM 2.0, Secure Boot, and a compatible 64-bit processor.\n"
-                "2. **Download Media Creation Tool**: Download the official Windows 11 installation media from Microsoft.\n"
-                "3. **Prepare USB Drive**: Create a bootable flash drive with at least 8 GB of storage.\n"
-                "4. **Boot from USB**: Restart your PC, press F12/Del to enter the boot menu, and boot from the USB drive.\n"
-                "5. **Install Windows**: Select language and partition, then click Install.\n"
-                "6. **Complete OOBE**: Connect to Wi-Fi, sign in with your Microsoft account, and customize your preferences."
-            )
-        if any(w in q_lower for w in ["hi", "hello", "hey", "greetings"]):
-            return "Hello! I am ContextMesh, your engineering intelligence assistant. How can I assist you today?"
-        return f"Here is the general information regarding your inquiry on '{query}'."
 
     async def synthesize(
         self,
@@ -145,17 +127,13 @@ class AnswerSynthesizer:
         if self.llm.is_live:
             try:
                 raw_answer = await self.llm.generate_chat(messages, temperature=0.2)
-                if (
-                    raw_answer.strip().startswith('{"user_intent"')
-                    or raw_answer.startswith("Mock response")
-                    or not raw_answer.strip()
-                ):
-                    raw_answer = self._offline_synthesize(query, evidence, contradictions)
-            except Exception:
-                raw_answer = self._offline_synthesize(query, evidence, contradictions)
+                if not raw_answer.strip() or raw_answer.strip().startswith('{"user_intent"'):
+                    raw_answer = self._format_evidence_fallback(query, evidence, contradictions)
+            except Exception as e:
+                logger.warning(f"Synthesis LLM call failed: {e}. Falling back to formatted evidence.")
+                raw_answer = self._format_evidence_fallback(query, evidence, contradictions)
         else:
-            # Deterministic synthesis for offline tests & verification
-            raw_answer = self._offline_synthesize(query, evidence, contradictions)
+            raw_answer = self._format_evidence_fallback(query, evidence, contradictions)
 
         # Build structured citations from evidence items
         citations: List[Citation] = []
@@ -185,8 +163,8 @@ class AnswerSynthesizer:
             trace_id=trace_id
         )
 
-    def _offline_synthesize(self, query: str, evidence: List[Evidence], contradictions: List[Contradiction]) -> str:
-        """Deterministic answer generator for offline verification and testing."""
+    def _format_evidence_fallback(self, query: str, evidence: List[Evidence], contradictions: List[Contradiction]) -> str:
+        """Format retrieved live evidence into structured markdown when LLM is unconfigured or unavailable."""
         q_lower = query.lower()
         parts = []
 
@@ -230,6 +208,15 @@ class AnswerSynthesizer:
             for si in slack_items:
                 author_str = f" ({si.author})" if si.author else ""
                 parts.append(f"- **{si.title}**{author_str}: {si.content[:180]}... [slack:{si.source_object_id}]")
+
+        # Web search results
+        web_items = [ev for ev in evidence if ev.source == "web"]
+        if web_items:
+            parts.append("\n### Web Search Results")
+            for wi in web_items:
+                link_str = f" ({wi.source_url})" if wi.source_url else ""
+                date_str = f" | {wi.updated_at}" if wi.updated_at else ""
+                parts.append(f"- **{wi.title}**{link_str}{date_str}: {wi.content[:250]} [web:{wi.source_object_id}]")
 
         # Include contradictions if any
         if contradictions:

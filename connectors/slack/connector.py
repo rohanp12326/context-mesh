@@ -1,4 +1,4 @@
-"""Slack connector supporting synthetic mock dataset, live Slack Web API, and official Slack MCP server."""
+"""Slack connector supporting live Slack Web API and official Slack / Composio MCP server."""
 
 import json
 import os
@@ -70,13 +70,12 @@ class SlackConnector(BaseConnector):
         mcp_endpoint: Optional[str] = None,
         mcp_token: Optional[str] = None,
     ):
-        super().__init__(mode=mode or "mock", synthetic_data_path=synthetic_data_path)
+        super().__init__(mode=mode or "live", synthetic_data_path=synthetic_data_path)
         self._explicit_mode = mode
         self._explicit_bot_token = bot_token
         self._explicit_user_token = user_token
         self._explicit_mcp_endpoint = mcp_endpoint
         self._explicit_mcp_token = mcp_token
-        self._mock_data: Optional[Dict[str, Any]] = None
         self._user_profile_cache: Dict[str, Dict[str, str]] = {}
 
     @property
@@ -116,91 +115,6 @@ class SlackConnector(BaseConnector):
             return self._explicit_mcp_token
         creds = VAULT.get_credential("slack")
         return creds.get("mcp_token") or os.getenv("SLACK_MCP_TOKEN") or self.user_token or self.bot_token
-
-    def _load_mock_data(self) -> List[Dict[str, Any]]:
-        if self._mock_data is not None:
-            return self._mock_data.get("slack", {}).get("messages", [])
-
-        data_path = self.synthetic_data_path or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "evals", "datasets", "synthetic_atlas.json"
-        )
-        if os.path.exists(data_path):
-            with open(data_path, "r", encoding="utf-8") as f:
-                self._mock_data = json.load(f)
-            return self._mock_data.get("slack", {}).get("messages", [])
-        return []
-
-    def _search_mock(self, query: str, limit: int = 10) -> List[ConnectorItem]:
-        """Search synthetic mock Slack dataset."""
-        messages = self._load_mock_data()
-        results = []
-        q_lower = query.lower()
-
-        from_filter = None
-        from_match = re.search(r"from:([a-zA-Z0-9_.-]+)", q_lower)
-        if from_match:
-            from_filter = from_match.group(1).lower()
-
-        in_filter = None
-        in_match = re.search(r"in:([a-zA-Z0-9_.-]+)", q_lower)
-        if in_match:
-            in_filter = in_match.group(1).lower()
-
-        clean_q = re.sub(r"(from|in):[a-zA-Z0-9_.-]+", "", q_lower).replace("or", "").strip()
-        words = [w for w in clean_q.split() if len(w) > 2]
-
-        for msg in messages:
-            author = str(msg.get("author") or "").lower()
-            channel_name = str(msg.get("channel") or "general").lower()
-            haystack = f"{msg.get('id', '')} {msg.get('title', '')} {channel_name} {author} {msg.get('content', '')}".lower()
-
-            matches_filter = True
-            if from_filter and from_filter not in author:
-                matches_filter = False
-            if in_filter and in_filter not in channel_name:
-                matches_filter = False
-
-            if matches_filter and (not words or any(w in haystack for w in words)):
-                channel_display = msg.get("channel", "general")
-                default_title = msg.get("title") or f"Slack #{channel_display}"
-                results.append(
-                    ConnectorItem(
-                        source="slack",
-                        id=msg["id"],
-                        title=default_title,
-                        content=msg["content"],
-                        url=msg.get("url", f"https://slack.com/archives/{channel_display}/{msg['id']}"),
-                        author=msg.get("author"),
-                        updated_at=msg.get("updated_at"),
-                        raw_payload=msg,
-                        metadata={
-                            "channel": channel_display,
-                            "updated_at": msg.get("updated_at")
-                        }
-                    )
-                )
-        return results[:limit]
-
-    def _get_by_id_mock(self, item_id: str) -> Optional[ConnectorItem]:
-        """Fetch item from synthetic mock Slack dataset."""
-        messages = self._load_mock_data()
-        for msg in messages:
-            if msg.get("id") == item_id:
-                channel_name = msg.get("channel", "general")
-                default_title = msg.get("title") or f"Slack #{channel_name}"
-                return ConnectorItem(
-                    source="slack",
-                    id=msg["id"],
-                    title=default_title,
-                    content=msg["content"],
-                    url=msg.get("url", f"https://slack.com/archives/{channel_name}/{msg['id']}"),
-                    author=msg.get("author"),
-                    updated_at=msg.get("updated_at"),
-                    raw_payload=msg,
-                    metadata={"channel": channel_name}
-                )
-        return None
 
     async def _resolve_user_profiles(self, user_ids: List[str], client: Any = None) -> None:
         """Fetch and cache user profile information for Slack user IDs."""
@@ -400,10 +314,9 @@ class SlackConnector(BaseConnector):
             or (self.user_token and is_valid_credential_value(self.user_token))
             or VAULT.is_service_authenticated("slack")
         )
-        if self.mode == "mock" or not is_configured:
-            if self.mode != "mock" and not is_configured:
-                logger.info("Slack live credentials not configured; falling back to synthetic dataset.")
-            return self._search_mock(query, limit)
+        if not is_configured:
+            logger.info("Slack live credentials not configured; returning empty list.")
+            return []
 
         # Mode 1: Remote Composio MCP or Official Hosted Slack MCP Server
         active_token = self.user_token or self.bot_token
@@ -527,9 +440,9 @@ class SlackConnector(BaseConnector):
                     if others:
                         return others[:limit]
             except Exception as e:
-                logger.warning(f"Slack live search API call failed: {e}. Falling back to mock dataset.")
+                logger.warning(f"Slack live search API call failed: {e}.")
 
-        return self._search_mock(query, limit)
+        return []
 
     async def _search_remote_mcp(self, query: str, limit: int = 10) -> List[ConnectorItem]:
         """Search Slack workspace via Composio MCP or official hosted Slack MCP server."""
@@ -696,8 +609,8 @@ class SlackConnector(BaseConnector):
             or (self.user_token and is_valid_credential_value(self.user_token))
             or VAULT.is_service_authenticated("slack")
         )
-        if self.mode == "mock" or not is_configured:
-            return self._get_by_id_mock(item_id)
+        if not is_configured:
+            return None
 
         # Remote MCP tool: slack_read_channel, slack_read_thread, or slack_read_canvas
         if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
@@ -733,7 +646,7 @@ class SlackConnector(BaseConnector):
             except Exception as e:
                 logger.debug(f"Slack MCP get_by_id failed: {e}")
 
-        return self._get_by_id_mock(item_id)
+        return None
 
     async def mutate(self, action: str, params: Dict[str, Any], scope: Optional[PermissionScope] = None) -> Dict[str, Any]:
         """Perform a mutation like sending a Slack message or posting to a channel."""
@@ -785,12 +698,6 @@ class SlackConnector(BaseConnector):
                 except Exception as e:
                     logger.warning(f"Slack live chat.postMessage failed: {e}")
 
-            # Mock fallback return
-            return {
-                "status": "posted",
-                "channel": channel,
-                "text": text,
-                "ts": "1725642100.000100"
-            }
+            raise RuntimeError("Slack live credentials or MCP connection not configured to post messages.")
 
         raise NotImplementedError(f"Mutating Slack with action '{action}' is not supported.")

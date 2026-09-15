@@ -5,33 +5,104 @@ from connectors.base import PermissionScope
 
 
 @pytest.mark.asyncio
-async def test_jira_mock_search(jira_connector):
-    # Test searching for blockers
+async def test_jira_unconfigured_returns_empty(jira_connector, monkeypatch):
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
     items = await jira_connector.search("blocker", limit=5)
-    assert len(items) > 0
-    assert any("ATL-101" in item.id for item in items)
+    assert items == []
 
 
 @pytest.mark.asyncio
-async def test_jira_get_by_id(jira_connector):
+async def test_jira_unconfigured_get_by_id(jira_connector, monkeypatch):
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
     item = await jira_connector.get_by_id("ATL-101")
-    assert item is not None
-    assert item.id == "ATL-101"
-    assert "token refresh" in item.title.lower()
+    assert item is None
 
 
 @pytest.mark.asyncio
-async def test_slack_mock_search(slack_connector):
+async def test_slack_unconfigured_returns_empty(slack_connector, monkeypatch):
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
     items = await slack_connector.search("Atlas launch plan", limit=5)
-    assert len(items) > 0
-    assert any("slack-atlas-spec" in item.id for item in items)
+    assert items == []
 
 
 @pytest.mark.asyncio
-async def test_gmail_mock_search(gmail_connector):
+async def test_gmail_unconfigured_returns_empty(gmail_connector, monkeypatch):
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_service_authenticated", lambda svc: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
     items = await gmail_connector.search("commitments", limit=5)
-    assert len(items) > 0
-    assert any("priya" in item.author.lower() for item in items)
+    assert items == []
+
+
+@pytest.mark.asyncio
+async def test_jira_live_rest_search(monkeypatch):
+    import httpx
+    from connectors.jira.connector import JiraConnector
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
+
+    conn = JiraConnector(
+        mode="live",
+        base_url="https://company.atlassian.net",
+        user_email="user@company.com",
+        api_token="token123"
+    )
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, *args, **kwargs):
+            class MockResp:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {
+                        "issues": [
+                            {
+                                "key": "PROJ-101",
+                                "fields": {
+                                    "summary": "Fix authentication session timeout",
+                                    "description": "Session tokens expire too early under high load.",
+                                    "status": {"name": "In Progress"},
+                                    "priority": {"name": "High"},
+                                    "assignee": {"displayName": "Alex Developer", "emailAddress": "alex@company.com"},
+                                    "updated": "2026-09-10T10:00:00.000Z"
+                                }
+                            }
+                        ]
+                    }
+            return MockResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    items = await conn.search("authentication", limit=1)
+    assert len(items) == 1
+    assert items[0].id == "PROJ-101"
+    assert "Fix authentication" in items[0].title
 
 
 @pytest.mark.asyncio
@@ -45,6 +116,11 @@ async def test_connector_permissions(jira_connector):
 async def test_gmail_live_rest_search(monkeypatch):
     import httpx
     from connectors.gmail.connector import GmailConnector
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
 
     conn = GmailConnector(mode="live", access_token="ya29.test_token")
 
@@ -92,6 +168,11 @@ async def test_gmail_live_rest_search(monkeypatch):
 async def test_slack_live_search(monkeypatch):
     import httpx
     from connectors.slack.connector import SlackConnector
+    from mcp_servers.composio_client import COMPOSIO_CLIENT
+    from security.vault import VAULT
+
+    monkeypatch.setattr(COMPOSIO_CLIENT, "is_configured", lambda: False)
+    monkeypatch.setattr(VAULT, "is_composio_connected", lambda svc: False)
 
     conn = SlackConnector(mode="live", bot_token="xoxb-test-token")
 

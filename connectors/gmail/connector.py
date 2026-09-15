@@ -1,8 +1,10 @@
-"""Gmail connector supporting synthetic mock email threads and live Gmail API / IMAP."""
+"""Gmail connector supporting live Gmail API / IMAP and Composio MCP."""
 
 import asyncio
 import email
+from datetime import datetime, timezone
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -13,6 +15,36 @@ from mcp_servers.composio_client import COMPOSIO_CLIENT
 from observability.logging import get_logger
 
 logger = get_logger("connectors.gmail")
+
+
+def _parse_email_timestamp(value: Optional[str]) -> float:
+    """Parse an RFC-2822 or ISO-8601 email date into an epoch timestamp (0.0 if unparseable)."""
+    if not value:
+        return 0.0
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+    except Exception:
+        pass
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _sort_items_by_date_desc(items: List[ConnectorItem]) -> List[ConnectorItem]:
+    """Return items ordered newest-first using their parsed date headers."""
+    return sorted(
+        items,
+        key=lambda it: _parse_email_timestamp(it.updated_at or it.created_at or ""),
+        reverse=True,
+    )
 
 
 def _decode_mime_str(val: Optional[str]) -> str:
@@ -108,7 +140,7 @@ class GmailConnector(BaseConnector):
         mcp_endpoint: Optional[str] = None,
         mcp_token: Optional[str] = None,
     ):
-        super().__init__(mode=mode or "mock", synthetic_data_path=synthetic_data_path)
+        super().__init__(mode=mode or "live", synthetic_data_path=synthetic_data_path)
         self._explicit_mode = mode
         self._explicit_account = account
         self._explicit_app_password = app_password
@@ -117,7 +149,6 @@ class GmailConnector(BaseConnector):
         self._explicit_token_path = token_path
         self._explicit_mcp_endpoint = mcp_endpoint
         self._explicit_mcp_token = mcp_token
-        self._mock_data: Optional[Dict[str, Any]] = None
 
     @property
     def mode(self) -> str:
@@ -178,81 +209,6 @@ class GmailConnector(BaseConnector):
         creds = VAULT.get_credential("gmail")
         return creds.get("mcp_token") or os.getenv("GMAIL_MCP_TOKEN")
 
-    def _load_mock_data(self) -> List[Dict[str, Any]]:
-        if self._mock_data is not None:
-            return self._mock_data.get("gmail", {}).get("threads", [])
-
-        data_path = self.synthetic_data_path or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "evals", "datasets", "synthetic_atlas.json"
-        )
-        if os.path.exists(data_path):
-            with open(data_path, "r", encoding="utf-8") as f:
-                self._mock_data = json.load(f)
-            return self._mock_data.get("gmail", {}).get("threads", [])
-        return []
-
-    def _search_mock(self, query: str, limit: int = 10) -> List[ConnectorItem]:
-        """Search synthetic mock dataset."""
-        threads = self._load_mock_data()
-        results = []
-        q_lower = query.lower()
-
-        for thread in threads:
-            haystack = (
-                f"{thread.get('id', '')} {thread.get('subject', '')} "
-                f"{thread.get('snippet', '')} {thread.get('from', '')} "
-                f"{' '.join(thread.get('to', []))} "
-                f"{' '.join(m.get('body', '') for m in thread.get('messages', []))}"
-            ).lower()
-
-            # Keyword matching
-            meta_words = {"what", "are", "my", "recent", "latest", "mails", "email", "emails", "messages", "inbox", "show", "get"}
-            words = [w for w in q_lower.replace('"', '').split() if len(w) > 2 and not w.startswith("newer_than") and w not in meta_words]
-            if not words or any(w in haystack for w in words):
-                first_msg = thread.get("messages", [{}])[0]
-                results.append(
-                    ConnectorItem(
-                        source="gmail",
-                        id=thread["id"],
-                        title=f"Email: {thread.get('subject')}",
-                        content=first_msg.get("body", thread.get("snippet", "")),
-                        url=f"https://mail.google.com/mail/u/0/#inbox/{thread['id']}",
-                        author=thread.get("from"),
-                        created_at=thread.get("date"),
-                        updated_at=thread.get("date"),
-                        raw_payload=thread,
-                        metadata={
-                            "from": thread.get("from"),
-                            "to": thread.get("to"),
-                            "subject": thread.get("subject"),
-                            "date": thread.get("date"),
-                            "message_count": len(thread.get("messages", []))
-                        }
-                    )
-                )
-        return results[:limit]
-
-    def _get_by_id_mock(self, item_id: str) -> Optional[ConnectorItem]:
-        """Fetch item from synthetic mock dataset."""
-        threads = self._load_mock_data()
-        for thread in threads:
-            if thread.get("id") == item_id or f"gmail-{thread.get('id')}" == item_id:
-                first_msg = thread.get("messages", [{}])[0]
-                return ConnectorItem(
-                    source="gmail",
-                    id=thread["id"],
-                    title=f"Email: {thread.get('subject')}",
-                    content=first_msg.get("body", thread.get("snippet", "")),
-                    url=f"https://mail.google.com/mail/u/0/#inbox/{thread['id']}",
-                    author=thread.get("from"),
-                    created_at=thread.get("date"),
-                    updated_at=thread.get("date"),
-                    raw_payload=thread,
-                    metadata={"from": thread.get("from"), "to": thread.get("to")}
-                )
-        return None
-
     async def search(self, query: str, limit: int = 10, scope: Optional[PermissionScope] = None) -> List[ConnectorItem]:
         if scope and "read:gmail" not in scope.allowed_scopes:
             raise PermissionError("Access denied: missing 'read:gmail' scope")
@@ -266,10 +222,9 @@ class GmailConnector(BaseConnector):
             or (self.account and self.app_password and is_valid_credential_value(self.app_password))
             or VAULT.is_service_authenticated("gmail")
         )
-        if self.mode == "mock" or not is_configured:
-            if self.mode != "mock" and not is_configured:
-                logger.info("Gmail live credentials not configured; falling back to synthetic dataset.")
-            return self._search_mock(query, limit)
+        if not is_configured:
+            logger.info("Gmail live credentials not configured; returning empty list.")
+            return []
 
         # Mode 1: Remote Composio MCP or Official Google Workspace MCP Server
         if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
@@ -278,27 +233,25 @@ class GmailConnector(BaseConnector):
                 if remote_results or (is_composio_ready and not (self.account and self.app_password) and not self.access_token):
                     return remote_results
             except Exception as e:
-                logger.warning(f"Gmail remote MCP search failed: {e}. Falling back to standard live/mock methods.")
+                logger.warning(f"Gmail remote MCP search failed: {e}.")
 
         # Live Mode A: App Password via IMAP SSL
         if self.account and self.app_password:
             try:
                 return await asyncio.to_thread(self._search_imap, query, limit)
             except Exception as e:
-                logger.warning(f"Live Gmail IMAP search failed: {e}. Falling back to mock dataset.")
-                return self._search_mock(query, limit)
+                logger.warning(f"Live Gmail IMAP search failed: {e}.")
+                return []
 
         # Live Mode B: OAuth Access Token via Gmail REST API
         if self.access_token:
             try:
                 return await self._search_rest(query, limit)
             except Exception as e:
-                logger.warning(f"Live Gmail REST search failed: {e}. Falling back to mock dataset.")
-                return self._search_mock(query, limit)
+                logger.warning(f"Live Gmail REST search failed: {e}.")
+                return []
 
-        # Fallback to mock if live requested but missing specific credentials
-        logger.warning("Gmail live mode selected but missing App Password or OAuth token; using mock fallback.")
-        return self._search_mock(query, limit)
+        return []
 
     async def _search_remote_mcp(self, query: str, limit: int = 10) -> List[ConnectorItem]:
         """Search Gmail threads via Composio MCP or official Google Workspace MCP server."""
@@ -379,7 +332,7 @@ class GmailConnector(BaseConnector):
                     metadata={"from": from_addr, "to": item.get("to"), "subject": subject, "date": date_val, "mcp": True}
                 )
             )
-        return items[:limit]
+        return _sort_items_by_date_desc(items)[:limit]
 
     def _search_imap(self, query: str, limit: int = 10) -> List[ConnectorItem]:
         """Synchronous IMAP search running inside asyncio.to_thread."""
@@ -513,7 +466,7 @@ class GmailConnector(BaseConnector):
                         metadata={"from": from_addr, "subject": subject, "date": date_hdr}
                     )
                 )
-            return items
+            return _sort_items_by_date_desc(items)[:limit]
 
     async def get_by_id(self, item_id: str, scope: Optional[PermissionScope] = None) -> Optional[ConnectorItem]:
         if scope and "read:gmail" not in scope.allowed_scopes:
@@ -528,8 +481,8 @@ class GmailConnector(BaseConnector):
             or (self.account and self.app_password and is_valid_credential_value(self.app_password))
             or VAULT.is_service_authenticated("gmail")
         )
-        if self.mode == "mock" or not is_configured:
-            return self._get_by_id_mock(item_id)
+        if not is_configured:
+            return None
 
         # Live fetch single thread
         clean_id = item_id.replace("gmail-", "")
@@ -601,9 +554,9 @@ class GmailConnector(BaseConnector):
                             raw_payload=msg
                         )
             except Exception as e:
-                logger.warning(f"Live Gmail get_by_id failed: {e}. Falling back to mock dataset.")
+                logger.warning(f"Live Gmail get_by_id failed: {e}.")
 
-        return self._get_by_id_mock(item_id)
+        return None
 
     async def mutate(self, action: str, params: Dict[str, Any], scope: Optional[PermissionScope] = None) -> Dict[str, Any]:
         raise NotImplementedError("Gmail write/mutation operations are not supported in this version.")

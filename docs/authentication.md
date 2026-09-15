@@ -73,8 +73,8 @@ ContextMesh supports two connection methods for Gmail:
 
 ---
 
-## 3. Switching Modes: Demo Sandbox vs. Live Enterprise
+## 3. Strict Live Enterprise Operation
 
-ContextMesh includes a one-click mode switcher on the **"🔐 Integrations & Auth"** tab:
-- **🧪 Demo Sandbox (Synthetic Project Atlas)**: Perfect for offline development, evaluations, and testing. Queries synthetic Jira tickets, Slack channels/canvases, and email threads without connecting to live external servers.
-- **🚀 Live Enterprise Mode**: Directs the agent to query your live authenticated enterprise APIs.
+ContextMesh is configured strictly for **Live Enterprise Mode**:
+- **🚀 Live Enterprise Mode**: Directs the agent to query your live authenticated enterprise APIs via Composio MCP gateway or direct provider credentials.
+- When an integration is unconfigured, the agent returns empty results or prompts the user with an authentication link—never falling back to synthetic mock data.

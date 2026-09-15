@@ -143,9 +143,9 @@ def test_is_service_authenticated_and_modes(temp_vault):
     assert temp_vault.is_service_authenticated("jira") is True
     assert temp_vault.get_service_mode("jira") == "live"
 
-    # Slack still unauthenticated -> fallback to mock
+    # Slack unauthenticated -> mode is still live
     assert temp_vault.is_service_authenticated("slack") is False
-    assert temp_vault.get_service_mode("slack") == "mock"
+    assert temp_vault.get_service_mode("slack") == "live"
 
     # Missing services check
     missing = temp_vault.get_missing_services(["jira", "slack", "gmail"])

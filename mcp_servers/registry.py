@@ -7,6 +7,7 @@ from mcp_servers.base import MCPToolCall, MCPToolDefinition, MCPToolResult
 from mcp_servers.jira_server import JiraMCPServer
 from mcp_servers.slack_server import SlackMCPServer
 from mcp_servers.gmail_server import GmailMCPServer
+from mcp_servers.web_server import WebMCPServer
 
 
 class MCPToolRegistry:
@@ -17,10 +18,12 @@ class MCPToolRegistry:
         jira_server: Optional[JiraMCPServer] = None,
         slack_server: Optional[SlackMCPServer] = None,
         gmail_server: Optional[GmailMCPServer] = None,
+        web_server: Optional[WebMCPServer] = None,
     ):
         self.jira = jira_server or JiraMCPServer()
         self.slack = slack_server or SlackMCPServer()
         self.gmail = gmail_server or GmailMCPServer()
+        self.web = web_server or WebMCPServer()
 
         self._tools: Dict[str, MCPToolDefinition] = {}
         self._handlers: Dict[str, Any] = {}
@@ -38,6 +41,10 @@ class MCPToolRegistry:
         for tool_def in self.gmail.get_tool_definitions():
             self._tools[tool_def.name] = tool_def
             self._handlers[tool_def.name] = self.gmail
+
+        for tool_def in self.web.get_tool_definitions():
+            self._tools[tool_def.name] = tool_def
+            self._handlers[tool_def.name] = self.web
 
     def get_all_tool_definitions(self) -> List[MCPToolDefinition]:
         return list(self._tools.values())

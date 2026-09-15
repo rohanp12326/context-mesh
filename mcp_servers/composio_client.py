@@ -10,6 +10,7 @@ Provides unified integration with Composio:
 import asyncio
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
@@ -18,6 +19,44 @@ from observability.logging import get_logger
 logger = get_logger("mcp.composio_client")
 
 COMPOSIO_DEFAULT_BASE_URL = "https://backend.composio.dev/api/v3.1"
+
+# Tokens that carry no real search intent in a "my latest mails" style request.
+_GMAIL_FILLER_TOKENS = {
+    "latest", "recent", "recently", "new", "newest", "my", "me", "mine",
+    "all", "mail", "mails", "email", "emails", "message", "messages",
+    "inbox", "show", "list", "get", "fetch", "please", "the", "top",
+    "first", "last", "some", "any", "give", "tell", "display", "find",
+    "check", "read", "thread", "threads",
+}
+
+# Gmail operators that indicate an explicit, intentional query.
+_GMAIL_OPERATOR_RE = re.compile(
+    r"\b(in|is|has|label|category|subject|from|to|cc|bcc|"
+    r"newer_than|older_than|after|before|list|filename|larger|smaller):"
+)
+
+
+def normalize_gmail_query(query: str) -> str:
+    """Rewrite vague natural-language mail requests into Gmail search operators.
+
+    Gmail interprets free text as a relevance search, so inputs like
+    "latest recent recent" surface stale mail instead of the newest inbox
+    messages. Generic recency requests are mapped to the inbox with a
+    recency window, while explicit operator queries are preserved verbatim.
+    """
+    q = (query or "").strip()
+    if not q or q == "*":
+        return "in:inbox newer_than:7d"
+
+    lowered = q.lower()
+    if _GMAIL_OPERATOR_RE.search(lowered):
+        return q
+
+    tokens = re.findall(r"[a-z0-9]+", lowered)
+    if tokens and all(tok in _GMAIL_FILLER_TOKENS for tok in tokens):
+        return "in:inbox newer_than:7d"
+
+    return q
 
 
 class ComposioMCPClient:
@@ -179,8 +218,7 @@ class ComposioMCPClient:
                     continue
 
         if not self.is_configured():
-            # In mock or unconfigured mode, provide a friendly simulated URL for demo flow
-            return f"https://connect.composio.dev/app/{slug}?user_id={uid}&demo=true"
+            raise RuntimeError(f"Composio is not configured. Please set COMPOSIO_API_KEY in .secrets/vault or .env to generate auth links for '{slug}'.")
 
         raise RuntimeError(f"Could not generate Composio auth link for '{slug}': {last_err}")
 
@@ -431,6 +469,18 @@ class ComposioMCPClient:
         t = tool_name.lower().replace(".", "_").replace("-", "_")
         mapped_args = dict(args)
 
+        # Already-resolved Composio action slugs pass through untouched.
+        if t.startswith("composio_"):
+            return tool_name, mapped_args
+
+        # ----------------- Web Search -----------------
+        if ("web" in t and ("search" in t or "browse" in t)) or t in ("search_web", "browse_web", "web_search"):
+            q = str(args.get("query") or args.get("q") or "").strip()
+            action = "COMPOSIO_SEARCH_NEWS" if any(
+                w in q.lower() for w in ("news", "headline", "breaking")
+            ) else "COMPOSIO_SEARCH_WEB"
+            return action, {"query": q}
+
         # ----------------- Jira -----------------
         if tool_name == "JIRA_SEARCH_ISSUES_USING_JQL" or ("jira" in t and ("search" in t or "query" in t)):
             q = (args.get("query") or args.get("jql") or "").strip()
@@ -498,10 +548,10 @@ class ComposioMCPClient:
             return "SLACK_POST_MESSAGE", mapped_args
 
         # ----------------- Gmail -----------------
-        if "gmail" in t and ("search" in t or "fetch" in t or "mail" in t and "thread" not in t):
+        if "gmail" in t and ("search" in t or "fetch" in t or ("mail" in t and "thread" not in t)):
             mapped_args = {
-                "query": args.get("query", ""),
-                "max_results": args.get("limit", 10),
+                "query": normalize_gmail_query(str(args.get("query", ""))),
+                "max_results": int(args.get("limit", 10)),
             }
             return "GMAIL_FETCH_EMAILS", mapped_args
 

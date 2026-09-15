@@ -18,10 +18,17 @@ def test_short_term_thread_state():
 
 def test_long_term_defaults_and_search():
     store = LongTermMemoryStore()
-    records = store.search_by_entity("Atlas")
-    assert len(records) > 0
-    atlas_alias = records[0]
-    assert atlas_alias.content.get("jira_project") == "ATL"
+    assert len(store.list_records()) == 0
+    rec = MemoryRecord(
+        memory_id="mem-custom-01",
+        namespace=["global", "project-core"],
+        type="project_alias",
+        content={"alias": "Core", "jira_project": "CORE"}
+    )
+    store.add_record(rec)
+    records = store.search_by_entity("Core")
+    assert len(records) == 1
+    assert records[0].content.get("jira_project") == "CORE"
 
 
 def test_memory_promotion_and_superseding():
@@ -33,8 +40,9 @@ def test_memory_promotion_and_superseding():
     assert safe is False
     assert "sensitive" in reason
 
-    # Promote alias and ensure older alias is marked superseded
-    new_alias = engine.promote_alias_candidate(alias="Atlas", jira_project="ATL-PROJ")
+    # Add initial alias, then update and ensure older is superseded
+    engine.promote_alias_candidate(alias="Atlas", jira_project="ATL")
+    engine.promote_alias_candidate(alias="Atlas", jira_project="ATL-PROJ")
     records = store.search_by_entity("Atlas")
     
     # Check that new alias is active

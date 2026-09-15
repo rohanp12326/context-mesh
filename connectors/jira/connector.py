@@ -1,4 +1,4 @@
-"""Jira connector supporting both offline synthetic dataset and live Jira REST API."""
+"""Jira connector supporting live Jira REST API and Composio MCP."""
 
 import json
 import os
@@ -26,14 +26,13 @@ class JiraConnector(BaseConnector):
         mcp_endpoint: Optional[str] = None,
         mcp_token: Optional[str] = None,
     ):
-        super().__init__(mode=mode or "mock", synthetic_data_path=synthetic_data_path)
+        super().__init__(mode=mode or "live", synthetic_data_path=synthetic_data_path)
         self._explicit_mode = mode
         self._explicit_base_url = base_url
         self._explicit_user_email = user_email
         self._explicit_api_token = api_token
         self._explicit_mcp_endpoint = mcp_endpoint
         self._explicit_mcp_token = mcp_token
-        self._mock_data: Optional[Dict[str, Any]] = None
 
     @property
     def mode(self) -> str:
@@ -81,92 +80,6 @@ class JiraConnector(BaseConnector):
         creds = VAULT.get_credential("jira")
         return creds.get("mcp_token") or os.getenv("ATLASSIAN_MCP_TOKEN")
 
-    def _load_mock_data(self) -> List[Dict[str, Any]]:
-        if self._mock_data is not None:
-            return self._mock_data.get("jira", {}).get("issues", [])
-
-        data_path = self.synthetic_data_path or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "evals", "datasets", "synthetic_atlas.json"
-        )
-        if os.path.exists(data_path):
-            with open(data_path, "r", encoding="utf-8") as f:
-                self._mock_data = json.load(f)
-            return self._mock_data.get("jira", {}).get("issues", [])
-        return []
-
-    def _search_mock(self, query: str, limit: int = 10) -> List[ConnectorItem]:
-        """Search synthetic mock dataset."""
-        issues = self._load_mock_data()
-        results = []
-        q_lower = query.lower()
-        
-        # Simple keyword / JQL filter simulation for mock mode
-        for issue in issues:
-            text_to_match = (
-                f"{issue.get('key', '')} {issue.get('summary', '')} "
-                f"{issue.get('description', '')} {issue.get('assignee', '')} "
-                f"{issue.get('status', '')} {issue.get('project', '')}"
-            ).lower()
-            
-            # Check for blocker flag or status queries
-            match = False
-            if "blocker" in q_lower and issue.get("is_blocker"):
-                match = True
-            elif "statuscategory = done" in q_lower or "status = done" in q_lower or "status in (done, closed)" in q_lower or "closed" in q_lower:
-                if issue.get("status") in ("Done", "Closed", "Resolved"):
-                    match = True
-            elif "status != done" in q_lower or "statuscategory != done" in q_lower:
-                if issue.get("status") != "Done":
-                    match = True
-            elif any(word in text_to_match for word in q_lower.split() if len(word) > 2):
-                match = True
-            elif not q_lower.strip():
-                match = True
-
-            if match:
-                results.append(
-                    ConnectorItem(
-                        source="jira",
-                        id=issue["key"],
-                        title=f"[{issue['key']}] {issue['summary']}",
-                        content=f"Status: {issue.get('status')} | Priority: {issue.get('priority')} | Assignee: {issue.get('assignee')} | Blocker: {issue.get('is_blocker')} | Description: {issue.get('description')}",
-                        url=issue.get("url", f"https://jira.example.com/browse/{issue['key']}"),
-                        author=issue.get("reporter"),
-                        created_at=issue.get("created_at"),
-                        updated_at=issue.get("updated_at"),
-                        raw_payload=issue,
-                        metadata={
-                            "project": issue.get("project"),
-                            "status": issue.get("status"),
-                            "priority": issue.get("priority"),
-                            "assignee": issue.get("assignee"),
-                            "is_blocker": issue.get("is_blocker", False),
-                            "blocks": issue.get("blocks", []),
-                        }
-                    )
-                )
-        return results[:limit]
-
-    def _get_by_id_mock(self, item_id: str) -> Optional[ConnectorItem]:
-        """Fetch issue from synthetic mock dataset."""
-        issues = self._load_mock_data()
-        for issue in issues:
-            if issue.get("key") == item_id:
-                return ConnectorItem(
-                    source="jira",
-                    id=issue["key"],
-                    title=f"[{issue['key']}] {issue['summary']}",
-                    content=f"Status: {issue.get('status')} | Assignee: {issue.get('assignee')} | Description: {issue.get('description')}",
-                    url=issue.get("url", ""),
-                    author=issue.get("reporter"),
-                    created_at=issue.get("created_at"),
-                    updated_at=issue.get("updated_at"),
-                    raw_payload=issue,
-                    metadata={"status": issue.get("status"), "assignee": issue.get("assignee")}
-                )
-        return None
-
     async def _get_cloud_id(self) -> Optional[str]:
         """Resolve Atlassian cloudId from env, vault, or tenant info."""
         if hasattr(self, "_cached_cloud_id") and self._cached_cloud_id:
@@ -201,10 +114,9 @@ class JiraConnector(BaseConnector):
         is_mcp_ready = has_mcp_token or has_api_token
         is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("jira"))
         is_configured = is_mcp_ready or is_composio_ready or VAULT.is_service_authenticated("jira")
-        if self.mode == "mock" or not is_configured:
-            if self.mode != "mock" and not is_configured:
-                logger.info("Jira live credentials not configured; falling back to synthetic dataset.")
-            return self._search_mock(query, limit)
+        if not is_configured:
+            logger.info("Jira live credentials not configured; returning empty list.")
+            return []
 
         # Mode 1: Remote Composio MCP or Official Atlassian Rovo Jira MCP Server
         if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
@@ -213,7 +125,7 @@ class JiraConnector(BaseConnector):
                 if remote_results is not None and (remote_results or is_composio_ready or not (self.base_url and self.user_email and self.api_token)):
                     return remote_results
             except Exception as e:
-                logger.warning(f"Jira remote MCP search failed: {e}. Falling back to standard live/mock methods.")
+                logger.warning(f"Jira remote MCP search failed: {e}.")
                 if is_composio_ready and not (self.base_url and self.user_email and self.api_token):
                     return []
 
@@ -263,11 +175,9 @@ class JiraConnector(BaseConnector):
                         )
                     return items
             except Exception as e:
-                logger.warning(f"Live Jira REST search failed: {e}. Falling back to mock dataset.")
+                logger.warning(f"Live Jira REST search failed: {e}.")
 
-        if is_composio_ready and not (self.base_url and self.user_email and self.api_token):
-            return []
-        return self._search_mock(query, limit)
+        return []
 
     async def _search_remote_mcp(self, query: str, limit: int = 10) -> List[ConnectorItem]:
         """Search Jira issues via official Atlassian Rovo MCP server."""
@@ -397,8 +307,8 @@ class JiraConnector(BaseConnector):
         is_mcp_ready = has_mcp_token or has_api_token
         is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("jira"))
         is_configured = is_mcp_ready or is_composio_ready or VAULT.is_service_authenticated("jira")
-        if self.mode == "mock" or not is_configured:
-            return self._get_by_id_mock(item_id)
+        if not is_configured:
+            return None
 
         # Remote MCP fetch
         if self.mode in ("live", "remote_mcp") and (is_composio_ready or is_mcp_ready or self.mode == "remote_mcp"):
@@ -494,9 +404,9 @@ class JiraConnector(BaseConnector):
                         metadata={"status": fields.get("status", {}).get("name")}
                     )
             except Exception as e:
-                logger.warning(f"Live Jira REST get_by_id failed: {e}. Falling back to mock.")
+                logger.warning(f"Live Jira REST get_by_id failed: {e}.")
 
-        return self._get_by_id_mock(item_id)
+        return None
 
     async def mutate(self, action: str, params: Dict[str, Any], scope: Optional[PermissionScope] = None) -> Dict[str, Any]:
         """Perform a mutation like creating a Jira issue (requires explicit permission)."""
@@ -541,46 +451,35 @@ class JiraConnector(BaseConnector):
                     if data and not (isinstance(data, dict) and (data.get("error") or data.get("is_error"))):
                         return data if isinstance(data, dict) else {"status": "created", "result": data}
                 except Exception as e:
-                    logger.warning(f"Jira remote MCP create_issue failed: {e}. Falling back.")
-
-            if self.mode == "mock":
-                new_key = f"ATL-{len(self._load_mock_data()) + 101}"
-                new_issue = {
-                    "key": new_key,
-                    "project": params.get("project", "ATL"),
-                    "summary": params.get("summary", "New Task"),
-                    "description": params.get("description", ""),
-                    "status": "To Do",
-                    "priority": params.get("priority", "Medium"),
-                    "assignee": params.get("assignee", "unassigned"),
-                    "created_at": "2026-09-09T12:00:00Z",
-                    "updated_at": "2026-09-09T12:00:00Z",
-                    "url": f"https://company.atlassian.net/browse/{new_key}"
-                }
-                if self._mock_data:
-                    self._mock_data.setdefault("jira", {}).setdefault("issues", []).append(new_issue)
-                return {"status": "created", "issue_key": new_key, "issue": new_issue}
+                    logger.warning(f"Jira remote MCP create_issue failed: {e}.")
 
             # Live create issue implementation
-            headers = {"Accept": "application/json", "Content-Type": "application/json"}
-            auth = (self.user_email, self.api_token)
-            payload = {
-                "fields": {
-                    "project": {"key": params.get("project", "ATL")},
-                    "summary": params.get("summary"),
-                    "description": params.get("description"),
-                    "issuetype": {"name": params.get("issue_type", "Task")}
+            if (
+                self.base_url and is_valid_credential_value(self.base_url) and
+                self.user_email and is_valid_credential_value(self.user_email) and
+                self.api_token and is_valid_credential_value(self.api_token)
+            ):
+                headers = {"Accept": "application/json", "Content-Type": "application/json"}
+                auth = (self.user_email, self.api_token)
+                payload = {
+                    "fields": {
+                        "project": {"key": params.get("project", "")},
+                        "summary": params.get("summary", ""),
+                        "description": params.get("description", ""),
+                        "issuetype": {"name": params.get("issue_type", "Task")}
+                    }
                 }
-            }
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{self.base_url}/rest/api/3/issue",
-                    json=payload,
-                    headers=headers,
-                    auth=auth,
-                    timeout=10.0
-                )
-                resp.raise_for_status()
-                return resp.json()
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        f"{self.base_url}/rest/api/3/issue",
+                        json=payload,
+                        headers=headers,
+                        auth=auth,
+                        timeout=10.0
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+
+            raise RuntimeError("Jira live credentials or MCP connection not configured for issue creation.")
 
         raise ValueError(f"Unsupported mutation action: {action}")

@@ -25,13 +25,13 @@ class ConnectorItem(BaseModel):
     updated_at: Optional[str] = None
     raw_payload: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    source_mode: str = "mock"
+    source_mode: str = "live"
 
 
 class BaseConnector(ABC):
     """Abstract base class for all enterprise data connectors."""
 
-    def __init__(self, mode: str = "mock", synthetic_data_path: Optional[str] = None):
+    def __init__(self, mode: str = "live", synthetic_data_path: Optional[str] = None):
         self._mode = mode
         self.synthetic_data_path = synthetic_data_path
 

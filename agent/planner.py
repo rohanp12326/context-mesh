@@ -20,14 +20,16 @@ Available Tools:
 - slack.search_messages(query: str, limit: int): Search Slack messages, channels, discussions, and canvases. IMPORTANT: If user asks for latest, recent, or general messages without a specific keyword, use '*' as the query to retrieve all recent messages.
 - slack.get_thread(thread_id: str): Fetch full Slack thread messages.
 - slack.post_message(channel: str, text: str): Post message to a Slack channel (MUTATION - requires approval).
-- gmail.search_messages(query: str, limit: int): Search email threads (e.g. 'newer_than:30d' or keyword).
+- gmail.search_messages(query: str, limit: int): Search email threads using Gmail query syntax. Use 'in:inbox newer_than:7d' for recent received mail, 'in:sent' for mail you sent, or meaningful keywords. Do NOT pass vague filler like 'latest recent'.
 - gmail.get_thread(thread_id: str): Fetch full email thread messages.
+- web.search(query: str, limit: int): Search the public web for current events, breaking news, live data, or facts that may have changed recently.
 
 Autonomous Planning Rules:
 1. Zero-Tool Queries: If the query is general knowledge (e.g. "who is the president of america", "how to setup windows 11"), programming trivia, or conversational chit-chat, set "user_intent": "direct_answer" and "steps": []. Do NOT call enterprise tools.
 2. Single-App Focus: If the query asks about a specific application (e.g. "what is my latest slack messages" -> Slack; "what are my recent mails" -> Gmail; "what are my closed tasks" -> Jira), select ONLY tools for that application.
 3. Multi-App / Cross-Tool: If the query inquires about tasks across tools ("what are my opened tasks"), select both Jira and Slack. If checking launch blockers or cross-team updates across mail and chats, select relevant tools.
 4. Specific vs Recency Slack Queries: For keyword searches (e.g. "Jira board", "deployment"), search that keyword. For inquiries asking for latest/recent messages without specific text keywords, use query: "*".
+5. Current Events / Web: For news, breaking events, live prices, weather, or anything needing up-to-date public information, use web.search instead of enterprise tools or a direct answer. For generic recent Gmail requests use query 'in:inbox newer_than:7d'.
 
 Output strictly valid JSON matching this schema:
 {
@@ -258,7 +260,7 @@ Generate the query execution plan in strict JSON.
                         )
                     )
                 if "gmail" in target_apps:
-                    g_q = "Atlas" if "atlas" in q_low else ("from:priya OR from:marcus" if ("priya" in q_low or "marcus" in q_low) else "")
+                    g_q = "Atlas" if "atlas" in q_low else ("from:priya OR from:marcus" if ("priya" in q_low or "marcus" in q_low) else "in:inbox newer_than:7d")
                     fallback_steps.append(
                         PlanStep(
                             id=f"s{len(fallback_steps)+1}",

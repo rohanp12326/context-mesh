@@ -5,6 +5,8 @@ Classifies incoming user queries into:
    that do NOT require enterprise tool execution.
 2. App-Specific Queries: Intelligently routes to Gmail, Jira, Slack, or combinations
    (e.g., 'recent mails' -> Gmail only; 'opened tasks' -> Jira + Slack).
+3. Web Queries: Live/current-events questions (news, weather, prices, "latest")
+   that require public web search rather than enterprise tools.
 """
 
 import re
@@ -26,6 +28,22 @@ ZERO_TOOL_PATTERNS = [
     r"^(\d+\s*[\+\-\*\/\^]\s*\d+|\bcalculate\b|\bsolve\b)",
     r"^(write|code)\s+a\s+(python|javascript|java|c\+\+|bash)\s+(function|script|algorithm)\s+to\b",
 ]
+
+# Patterns indicating a request for live/current information that needs web search
+WEB_RECENCY_PATTERNS = [
+    r"\b(latest|recent|current|today'?s?|breaking|live)\s+(news|headlines?|updates?|events?|scores?|prices?|weather|results?)\b",
+    r"\b(news|headlines?)\b",
+    r"\b(search (the )?(web|internet)|google|look (it |this )?up online|web search|search online)\b",
+    r"\b(weather|stock price|share price|exchange rate|match score|election results?)\b",
+    r"\bwhat('?s| is) (happening|going on) (in|with|around|today)\b",
+]
+
+# Enterprise domain hints always take precedence over web routing
+_ENTERPRISE_HINTS = {
+    "jira", "slack", "gmail", "email", "emails", "mail", "mails", "inbox",
+    "ticket", "tickets", "task", "tasks", "issue", "issues", "sprint",
+    "channel", "channels", "atlas", "atl-", "priya", "marcus",
+}
 
 # Patterns for specific application domains
 GMAIL_KEYWORDS = {
@@ -69,12 +87,27 @@ class AppRouter:
     """Intelligent query intent classifier and app routing engine."""
 
     @classmethod
+    def is_web_query(cls, query: str) -> bool:
+        """Return True if the query needs live web search rather than enterprise tools."""
+        q = query.strip().lower()
+        if any(h in q for h in _ENTERPRISE_HINTS):
+            return False
+        for pattern in WEB_RECENCY_PATTERNS:
+            if re.search(pattern, q, re.IGNORECASE):
+                return True
+        return False
+
+    @classmethod
     def is_zero_tool_query(cls, query: str) -> bool:
         """Return True if query is general knowledge or conversational and needs no tools."""
         q = query.strip().lower()
 
         # If it explicitly mentions our known tools or project entities, it's not zero-tool
         if any(w in q for w in ["jira", "slack", "gmail", "atlas", "atl-", "priya", "marcus"]):
+            return False
+
+        # Live/current-events questions require web retrieval, not a parametric answer
+        if cls.is_web_query(query):
             return False
 
         # Common general queries
@@ -97,6 +130,9 @@ class AppRouter:
         """
         if cls.is_zero_tool_query(query):
             return []
+
+        if cls.is_web_query(query):
+            return ["web"]
 
         q = query.lower()
         words = set(re.findall(r"\b[a-z0-9_-]+\b", q))

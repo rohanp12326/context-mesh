@@ -50,8 +50,7 @@ class ContextMeshAgent:
         user_id: str = "default_user",
         thread_id: str = "default_thread",
         can_mutate: bool = False,
-        force_demo: bool = False,
-        allow_auth_gate: bool = False,
+        allow_auth_gate: bool = True,
         require_live: bool = False,
         skip_unauthenticated: bool = False,
         max_iterations: int = 3,
@@ -60,8 +59,8 @@ class ContextMeshAgent:
     ) -> AgentResponse:
         """Run the autonomous ReAct retrieval and synthesis loop for a user query."""
         logger.info(
-            f"ContextMeshAgent.run() started: query='{query}', user='{user_id}', "
-            f"thread='{thread_id}', can_mutate={can_mutate}, force_demo={force_demo}, "
+            f"AgentGraph.run: query='{query}', user='{user_id}', "
+            f"thread='{thread_id}', can_mutate={can_mutate}, "
             f"allow_auth_gate={allow_auth_gate}, skip_unauthenticated={skip_unauthenticated}"
         )
         trace: RequestTrace = GLOBAL_TRACER.start_trace("agent_request", user_id=user_id, thread_id=thread_id)
@@ -126,7 +125,7 @@ class ContextMeshAgent:
 
         react_system_prompt = (
             "You are ContextMesh, an autonomous enterprise intelligence assistant.\n"
-            "You answer questions by searching enterprise tools: Jira, Slack, and Gmail.\n\n"
+            "You answer questions by searching enterprise tools: Jira, Slack, Gmail, and Web Search.\n\n"
             f"User Context:\n- Current Requester ID: {user_id}\n\n"
             f"Organizational Memory:\n{memory_context}\n\n"
             f"Available Tools:\n{formatted_tool_descs}\n\n"
@@ -134,11 +133,13 @@ class ContextMeshAgent:
             "1. Reason before acting: Formulate your thought explaining what data you need and why you choose specific tools.\n"
             "2. ALWAYS invoke tools to retrieve factual data before answering enterprise questions.\n"
             "3. When searching Slack, you can use query syntax like 'from:<username>' to find messages sent by a specific person, or keywords to find content.\n"
-            "4. Pay close attention to message authors/senders versus recipients: verify who actually sent a message rather than assuming a message addressing someone was sent by them.\n"
-            "5. You can call multiple tools in parallel.\n"
-            "6. After observing results, inspect if evidence is sufficient. If yes, synthesize the answer with citations.\n"
-            "7. For mutations (create_issue, post_message), formulate the tool call and stop for human approval.\n"
-            "8. Point out conflicting information and note recent versus stale updates.\n"
+            "4. When searching Gmail, use Gmail search operators. For 'my latest/recent emails' use 'in:inbox newer_than:7d' (received mail); use 'in:sent' for mail you sent. Never use 'from:me' to mean your inbox, and never pass vague filler like 'latest recent' as free text.\n"
+            "5. Use the web search tool for current events, breaking news, live data, or anything that may have changed recently; prefer it over guessing from memory.\n"
+            "6. Pay close attention to message authors/senders versus recipients: verify who actually sent a message rather than assuming a message addressing someone was sent by them.\n"
+            "7. You can call multiple tools in parallel.\n"
+            "8. After observing results, inspect if evidence is sufficient. If yes, synthesize the answer with citations.\n"
+            "9. For mutations (create_issue, post_message), formulate the tool call and stop for human approval.\n"
+            "10. Point out conflicting information and note recent versus stale updates.\n"
         )
 
         messages: List[Dict[str, Any]] = [
@@ -152,348 +153,331 @@ class ContextMeshAgent:
         required_services: List[str] = []
         skipped_services: List[str] = []
 
-        # Configure temporary mock overrides if force_demo is enabled
-        old_modes = {
-            "jira": getattr(self.tool_registry.jira.connector, "_explicit_mode", None),
-            "slack": getattr(self.tool_registry.slack.connector, "_explicit_mode", None),
-            "gmail": getattr(self.tool_registry.gmail.connector, "_explicit_mode", None),
-        }
-        if force_demo:
-            self.tool_registry.jira.connector.mode = "mock"
-            self.tool_registry.slack.connector.mode = "mock"
-            self.tool_registry.gmail.connector.mode = "mock"
-
         scope = PermissionScope(
             user_id=user_id,
             allowed_scopes=["read:jira", "read:slack", "read:gmail", "write:jira" if can_mutate else "", "write:slack" if can_mutate else ""],
             can_mutate=can_mutate
         )
 
-        try:
-            # 4. Autonomous ReAct Loop
-            for iteration in range(max_iterations):
-                iter_start_t = time.time()
-                logger.info(f"🔄 [ReAct Loop] --- Starting Iteration {iteration + 1}/{max_iterations} ---")
-                await notify_step({"type": "iteration_start", "iteration": iteration + 1, "max_iterations": max_iterations})
+        # 4. Autonomous ReAct Loop
+        for iteration in range(max_iterations):
+            iter_start_t = time.time()
+            logger.info(f"🔄 [ReAct Loop] --- Starting Iteration {iteration + 1}/{max_iterations} ---")
+            await notify_step({"type": "iteration_start", "iteration": iteration + 1, "max_iterations": max_iterations})
 
-                llm_response = await self.llm.generate_with_tools(
-                    messages=messages,
-                    tools=tool_defs,
-                    temperature=0.1
-                )
+            llm_response = await self.llm.generate_with_tools(
+                messages=messages,
+                tools=tool_defs,
+                temperature=0.1
+            )
 
-                # Case A: LLM decided to invoke tool(s)
-                if llm_response.tool_calls:
-                    initial_calls = llm_response.tool_calls
-                    thought = llm_response.thought or llm_response.content
-                    if not thought:
-                        tool_names_str = ", ".join(f"`{tc.name}`" for tc in initial_calls)
-                        if iteration == 0:
-                            thought = f"Analyzing inquiry for required enterprise context. Invoking {tool_names_str} to retrieve authoritative data."
-                        else:
-                            thought = f"Evaluating observations from previous iteration ({len(all_raw_items)} items retrieved so far). Invoking {tool_names_str} to expand context."
+            # Case A: LLM decided to invoke tool(s)
+            if llm_response.tool_calls:
+                initial_calls = llm_response.tool_calls
+                thought = llm_response.thought or llm_response.content
+                if not thought:
+                    tool_names_str = ", ".join(f"`{tc.name}`" for tc in initial_calls)
+                    if iteration == 0:
+                        thought = f"Analyzing inquiry for required enterprise context. Invoking {tool_names_str} to retrieve authoritative data."
+                    else:
+                        thought = f"Evaluating observations from previous iteration ({len(all_raw_items)} items retrieved so far). Invoking {tool_names_str} to expand context."
 
-                    logger.info(f"🧠 [THOUGHT - Iteration {iteration + 1}]: {thought}")
-                    await notify_step({"type": "thought", "iteration": iteration + 1, "content": thought})
+                logger.info(f"🧠 [THOUGHT - Iteration {iteration + 1}]: {thought}")
+                await notify_step({"type": "thought", "iteration": iteration + 1, "content": thought})
 
-                    for tc in initial_calls:
-                        args_str = json.dumps(tc.arguments, ensure_ascii=False)
-                        logger.info(f"🛠️ [ACTION - Iteration {iteration + 1}]: Calling Tool '{tc.name}' with parameters: {args_str}")
-                        await notify_step({
-                            "type": "action",
-                            "iteration": iteration + 1,
-                            "tool": tc.name,
-                            "arguments": tc.arguments,
-                            "call_id": tc.id
-                        })
+                for tc in initial_calls:
+                    args_str = json.dumps(tc.arguments, ensure_ascii=False)
+                    logger.info(f"🛠️ [ACTION - Iteration {iteration + 1}]: Calling Tool '{tc.name}' with parameters: {args_str}")
+                    await notify_step({
+                        "type": "action",
+                        "iteration": iteration + 1,
+                        "tool": tc.name,
+                        "arguments": tc.arguments,
+                        "call_id": tc.id
+                    })
 
-                    # Determine services needed
-                    batch_services = list(dict.fromkeys(
-                        tc.name.split(".")[0] for tc in initial_calls if "." in tc.name
-                    ))
-                    for bs in batch_services:
-                        if bs not in required_services:
-                            required_services.append(bs)
+                # Determine services needed
+                batch_services = list(dict.fromkeys(
+                    tc.name.split(".")[0] for tc in initial_calls if "." in tc.name
+                ))
+                for bs in batch_services:
+                    if bs not in required_services:
+                        required_services.append(bs)
 
-                    # --- Just-In-Time Auth Gate Check ---
-                    if (allow_auth_gate or require_live) and not force_demo:
-                        from security.vault import VAULT
-                        missing_services = VAULT.get_missing_services(required_services)
-                        connected_services = [s for s in required_services if s not in missing_services]
+                # --- Just-In-Time Auth Gate Check ---
+                if allow_auth_gate or require_live:
+                    from security.vault import VAULT
+                    missing_services = VAULT.get_missing_services(required_services)
+                    connected_services = [s for s in required_services if s not in missing_services]
 
-                        if skip_unauthenticated and missing_services:
-                            logger.info(f"skip_unauthenticated=True: Pruning tool calls for unauthenticated {missing_services}")
-                            skipped_services = list(missing_services)
-                            initial_calls = [tc for tc in initial_calls if tc.name.split(".")[0] not in missing_services]
-                            required_services = [s for s in required_services if s not in missing_services]
+                    if skip_unauthenticated and missing_services:
+                        logger.info(f"skip_unauthenticated=True: Pruning tool calls for unauthenticated {missing_services}")
+                        skipped_services = list(missing_services)
+                        initial_calls = [tc for tc in initial_calls if tc.name.split(".")[0] not in missing_services]
+                        required_services = [s for s in required_services if s not in missing_services]
 
-                            if not initial_calls:
-                                GLOBAL_TRACER.finish_trace(trace.trace_id)
-                                services_str = ", ".join(s.upper() for s in skipped_services)
-                                auth_skip_step = ReActStep(
-                                    iteration=iteration + 1,
-                                    thought=thought,
-                                    tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in llm_response.tool_calls],
-                                    observations=[{"tool": s, "success": False, "error": "Unauthenticated service skipped", "summary": f"Skipped unauthenticated service: {s}"} for s in skipped_services],
-                                    duration_ms=round((time.time() - iter_start_t) * 1000, 2)
-                                )
-                                react_steps.append(auth_skip_step)
-                                await notify_step({"type": "complete", "react_steps": len(react_steps)})
-                                return AgentResponse(
-                                    answer=(
-                                        f"⚠️ All required services ({services_str}) were skipped because they lack live authentication. "
-                                        "Please connect your account(s) or run with demo data."
-                                    ),
-                                    citations=[],
-                                    confidence=0.0,
-                                    plan=QueryPlan(user_intent="auth_skipped", steps=[], risk_level="low"),
-                                    skipped_services=skipped_services,
-                                    required_services=[],
-                                    react_steps=react_steps
-                                )
-
-                        elif missing_services:
-                            logger.info(f"Query requires services {required_services}, but {missing_services} lack live authentication. Halting for JIT auth.")
+                        if not initial_calls:
                             GLOBAL_TRACER.finish_trace(trace.trace_id)
-                            services_str = ", ".join(s.upper() for s in missing_services)
-                            interim_plan = QueryPlan(
-                                user_intent="cross_tool_inquiry" if len(required_services) > 1 else "app_specific_inquiry",
-                                entities=resolved_entities,
-                                steps=[
-                                    PlanStep(
-                                        id=f"step_{idx+1}",
-                                        tool=tc.name,
-                                        query=str(tc.arguments.get("query", "")),
-                                        purpose=f"Search {tc.name}",
-                                        arguments=tc.arguments
-                                    )
-                                    for idx, tc in enumerate(initial_calls)
-                                ],
-                                risk_level="low",
-                                requires_approval=False
-                            )
-                            auth_gate_step = ReActStep(
+                            services_str = ", ".join(s.upper() for s in skipped_services)
+                            auth_skip_step = ReActStep(
                                 iteration=iteration + 1,
                                 thought=thought,
-                                tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in initial_calls],
-                                observations=[{"tool": s, "success": False, "error": "Auth required", "summary": f"Service requires live authentication: {s}"} for s in missing_services],
+                                tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in llm_response.tool_calls],
+                                observations=[{"tool": s, "success": False, "error": "Unauthenticated service skipped", "summary": f"Skipped unauthenticated service: {s}"} for s in skipped_services],
                                 duration_ms=round((time.time() - iter_start_t) * 1000, 2)
                             )
-                            react_steps.append(auth_gate_step)
+                            react_steps.append(auth_skip_step)
                             await notify_step({"type": "complete", "react_steps": len(react_steps)})
                             return AgentResponse(
                                 answer=(
-                                    f"🔐 **Authentication Required**: This query needs data from **{services_str}**. "
-                                    "Connect your account(s) below to fetch your real enterprise data, or proceed with demo data."
+                                    f"⚠️ All required services ({services_str}) were skipped because they lack live authentication. "
+                                    "Please connect your account(s) to query your real enterprise data."
                                 ),
                                 citations=[],
-                                confidence=1.0,
-                                plan=interim_plan,
-                                contradictions=[],
-                                trace_id=trace.trace_id,
-                                requires_approval=False,
-                                auth_required=True,
-                                missing_services=missing_services,
-                                required_services=required_services,
+                                confidence=0.0,
+                                plan=QueryPlan(user_intent="auth_skipped", steps=[], risk_level="low"),
                                 skipped_services=skipped_services,
-                                auth_challenge={
-                                    "query": query,
-                                    "required_services": required_services,
-                                    "missing_services": missing_services,
-                                    "connected_services": connected_services,
-                                    "plan": interim_plan.model_dump()
-                                },
+                                required_services=[],
                                 react_steps=react_steps
                             )
 
-                    # --- Mutation Approval Gate Check ---
-                    mutation_calls = [
-                        tc for tc in initial_calls
-                        if tc.name in ("jira.create_issue", "slack.post_message")
-                        or getattr(self.tool_registry.get_tool_definition(tc.name), "requires_approval", False)
-                    ]
-
-                    if mutation_calls and not can_mutate:
-                        logger.warning("ReAct loop encountered mutation call without approval. Halting for human approval.")
+                    elif missing_services:
+                        logger.info(f"Query requires services {required_services}, but {missing_services} lack live authentication. Halting for JIT auth.")
                         GLOBAL_TRACER.finish_trace(trace.trace_id)
-                        mut_call = mutation_calls[0]
-                        pending_action = {
-                            "action": mut_call.name,
-                            "params": dict(mut_call.arguments)
-                        }
-                        self.short_term.set_pending_approval(thread_id, pending_action)
-
+                        services_str = ", ".join(s.upper() for s in missing_services)
                         interim_plan = QueryPlan(
-                            user_intent="mutation_operation",
+                            user_intent="cross_tool_inquiry" if len(required_services) > 1 else "app_specific_inquiry",
                             entities=resolved_entities,
                             steps=[
                                 PlanStep(
-                                    id="step_mut_1",
-                                    tool=mut_call.name,
-                                    query=str(mut_call.arguments.get("summary", query[:60])),
-                                    purpose=f"Execute {mut_call.name}",
-                                    arguments=mut_call.arguments
+                                    id=f"step_{idx+1}",
+                                    tool=tc.name,
+                                    query=str(tc.arguments.get("query", "")),
+                                    purpose=f"Search {tc.name}",
+                                    arguments=tc.arguments
                                 )
+                                for idx, tc in enumerate(initial_calls)
                             ],
-                            risk_level="high",
-                            requires_approval=True
+                            risk_level="low",
+                            requires_approval=False
                         )
-
-                        target_svc = mut_call.name.split(".")[0].title()
-                        mut_gate_step = ReActStep(
+                        auth_gate_step = ReActStep(
                             iteration=iteration + 1,
                             thought=thought,
                             tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in initial_calls],
-                            observations=[{"tool": mut_call.name, "success": False, "error": "Approval required", "summary": f"Mutation requires human confirmation before execution"}],
+                            observations=[{"tool": s, "success": False, "error": "Auth required", "summary": f"Service requires live authentication: {s}"} for s in missing_services],
                             duration_ms=round((time.time() - iter_start_t) * 1000, 2)
                         )
-                        react_steps.append(mut_gate_step)
+                        react_steps.append(auth_gate_step)
                         await notify_step({"type": "complete", "react_steps": len(react_steps)})
                         return AgentResponse(
                             answer=(
-                                f"⚠️ **Approval Required**: This operation creates a mutation in **{target_svc}**. "
-                                "In accordance with security policies, mutations require human confirmation before execution."
+                                f"🔐 **Authentication Required**: This query needs data from **{services_str}**. "
+                                "Connect your account(s) below to fetch your real enterprise data."
                             ),
                             citations=[],
                             confidence=1.0,
                             plan=interim_plan,
                             contradictions=[],
                             trace_id=trace.trace_id,
-                            requires_approval=True,
-                            pending_mutation=pending_action,
+                            requires_approval=False,
+                            auth_required=True,
+                            missing_services=missing_services,
                             required_services=required_services,
+                            skipped_services=skipped_services,
+                            auth_challenge={
+                                "query": query,
+                                "required_services": required_services,
+                                "missing_services": missing_services,
+                                "connected_services": connected_services,
+                                "plan": interim_plan.model_dump()
+                            },
                             react_steps=react_steps
                         )
 
-                    # --- Tool Execution ---
-                    tools_span = GLOBAL_TRACER.add_span(root_span, "tool_execution", {"iteration": iteration, "count": len(initial_calls)})
-                    mcp_calls = [
-                        MCPToolCall(call_id=tc.id or f"step_{len(executed_plan_steps)+idx+1}", tool_name=tc.name, arguments=tc.arguments)
-                        for idx, tc in enumerate(initial_calls)
-                    ]
-                    results = await self.tool_registry.execute_parallel(mcp_calls, scope=scope)
-                    tools_span.finish()
+                # --- Mutation Approval Gate Check ---
+                mutation_calls = [
+                    tc for tc in initial_calls
+                    if tc.name in ("jira.create_issue", "slack.post_message")
+                    or getattr(self.tool_registry.get_tool_definition(tc.name), "requires_approval", False)
+                ]
 
-                    # Process observations
-                    step_observations: List[Dict[str, Any]] = []
-                    for tc, res in zip(initial_calls, results):
-                        step_id = tc.id or f"step_{len(executed_plan_steps)+1}"
-                        executed_plan_steps.append(
+                if mutation_calls and not can_mutate:
+                    logger.warning("ReAct loop encountered mutation call without approval. Halting for human approval.")
+                    GLOBAL_TRACER.finish_trace(trace.trace_id)
+                    mut_call = mutation_calls[0]
+                    pending_action = {
+                        "action": mut_call.name,
+                        "params": dict(mut_call.arguments)
+                    }
+                    self.short_term.set_pending_approval(thread_id, pending_action)
+
+                    interim_plan = QueryPlan(
+                        user_intent="mutation_operation",
+                        entities=resolved_entities,
+                        steps=[
                             PlanStep(
-                                id=step_id,
-                                tool=tc.name,
-                                query=str(tc.arguments.get("query", "")),
-                                purpose=f"Retrieve data via {tc.name}",
-                                arguments=tc.arguments
+                                id="step_mut_1",
+                                tool=mut_call.name,
+                                query=str(mut_call.arguments.get("summary", query[:60])),
+                                purpose=f"Execute {mut_call.name}",
+                                arguments=mut_call.arguments
                             )
+                        ],
+                        risk_level="high",
+                        requires_approval=True
+                    )
+
+                    target_svc = mut_call.name.split(".")[0].title()
+                    mut_gate_step = ReActStep(
+                        iteration=iteration + 1,
+                        thought=thought,
+                        tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in initial_calls],
+                        observations=[{"tool": mut_call.name, "success": False, "error": "Approval required", "summary": f"Mutation requires human confirmation before execution"}],
+                        duration_ms=round((time.time() - iter_start_t) * 1000, 2)
+                    )
+                    react_steps.append(mut_gate_step)
+                    await notify_step({"type": "complete", "react_steps": len(react_steps)})
+                    return AgentResponse(
+                        answer=(
+                            f"⚠️ **Approval Required**: This operation creates a mutation in **{target_svc}**. "
+                            "In accordance with security policies, mutations require human confirmation before execution."
+                        ),
+                        citations=[],
+                        confidence=1.0,
+                        plan=interim_plan,
+                        contradictions=[],
+                        trace_id=trace.trace_id,
+                        requires_approval=True,
+                        pending_mutation=pending_action,
+                        required_services=required_services,
+                        react_steps=react_steps
+                    )
+
+                # --- Tool Execution ---
+                tools_span = GLOBAL_TRACER.add_span(root_span, "tool_execution", {"iteration": iteration, "count": len(initial_calls)})
+                mcp_calls = [
+                    MCPToolCall(call_id=tc.id or f"step_{len(executed_plan_steps)+idx+1}", tool_name=tc.name, arguments=tc.arguments)
+                    for idx, tc in enumerate(initial_calls)
+                ]
+                results = await self.tool_registry.execute_parallel(mcp_calls, scope=scope)
+                tools_span.finish()
+
+                # Process observations
+                step_observations: List[Dict[str, Any]] = []
+                for tc, res in zip(initial_calls, results):
+                    step_id = tc.id or f"step_{len(executed_plan_steps)+1}"
+                    executed_plan_steps.append(
+                        PlanStep(
+                            id=step_id,
+                            tool=tc.name,
+                            query=str(tc.arguments.get("query", "")),
+                            purpose=f"Retrieve data via {tc.name}",
+                            arguments=tc.arguments
                         )
+                    )
 
-                        if res.success and res.data is not None:
-                            step_items: List[ConnectorItem] = []
-                            if isinstance(res.data, list):
-                                for d in res.data:
-                                    step_items.append(ConnectorItem(**d) if isinstance(d, dict) else d)
-                            elif isinstance(res.data, dict) and "id" in res.data:
-                                step_items.append(ConnectorItem(**res.data))
+                    if res.success and res.data is not None:
+                        step_items: List[ConnectorItem] = []
+                        if isinstance(res.data, list):
+                            for d in res.data:
+                                step_items.append(ConnectorItem(**d) if isinstance(d, dict) else d)
+                        elif isinstance(res.data, dict) and "id" in res.data:
+                            step_items.append(ConnectorItem(**res.data))
 
-                            all_raw_items.extend(step_items)
+                        all_raw_items.extend(step_items)
 
-                            # Format concise observation for LLM context
-                            if step_items:
-                                obs_lines = [f"Result for {tc.name} ({len(step_items)} items):"]
-                                for it in step_items[:8]:
-                                    author_str = f"Author: {it.author} | " if it.author else ""
-                                    channel_str = f"Channel: #{it.metadata.get('channel')} | " if (it.metadata and it.metadata.get("channel")) else ""
-                                    obs_lines.append(f"- [{it.source}:{it.id}] ({author_str}{channel_str}Title: {it.title}) {it.content[:150]}")
-                                obs_text = "\n".join(obs_lines)
-                                obs_summary = ", ".join(f"[{it.id}] {it.title} ({it.author})" if it.author else f"[{it.id}] {it.title}" for it in step_items[:3])
-                            else:
-                                obs_text = f"Result for {tc.name}: 0 items found."
-                                obs_summary = "0 items found."
-
-                            logger.info(f"👁️ [OBSERVATION - Iteration {iteration + 1}]: Tool '{tc.name}' returned {len(step_items)} item(s) -> {obs_summary}")
-                            await notify_step({
-                                "type": "observation",
-                                "iteration": iteration + 1,
-                                "tool": tc.name,
-                                "success": True,
-                                "count": len(step_items),
-                                "summary": obs_summary,
-                                "items": [{"id": it.id, "title": it.title, "source": it.source, "author": it.author} for it in step_items[:3]]
-                            })
-                            step_observations.append({
-                                "tool": tc.name,
-                                "success": True,
-                                "items_count": len(step_items),
-                                "summary": obs_summary,
-                                "error": None
-                            })
-
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": obs_text
-                            })
+                        # Format concise observation for LLM context
+                        if step_items:
+                            obs_lines = [f"Result for {tc.name} ({len(step_items)} items):"]
+                            for it in step_items[:8]:
+                                author_str = f"Author: {it.author} | " if it.author else ""
+                                channel_str = f"Channel: #{it.metadata.get('channel')} | " if (it.metadata and it.metadata.get("channel")) else ""
+                                date_str = f"Date: {it.updated_at or it.created_at} | " if (it.updated_at or it.created_at) else ""
+                                obs_lines.append(f"- [{it.source}:{it.id}] ({author_str}{channel_str}{date_str}Title: {it.title}) {it.content[:150]}")
+                            obs_text = "\n".join(obs_lines)
+                            obs_summary = ", ".join(f"[{it.id}] {it.title} ({it.author})" if it.author else f"[{it.id}] {it.title}" for it in step_items[:3])
                         else:
-                            err_msg = res.error or "Unknown tool error"
-                            tool_failures.append({"tool": tc.name, "error": err_msg})
-                            logger.warning(f"👁️ [OBSERVATION - Iteration {iteration + 1}]: Tool '{tc.name}' FAILED -> {err_msg}")
-                            await notify_step({
-                                "type": "observation",
-                                "iteration": iteration + 1,
-                                "tool": tc.name,
-                                "success": False,
-                                "count": 0,
-                                "summary": f"Error: {err_msg}",
-                                "error": err_msg
-                            })
-                            step_observations.append({
-                                "tool": tc.name,
-                                "success": False,
-                                "items_count": 0,
-                                "summary": f"Error: {err_msg}",
-                                "error": err_msg
-                            })
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": f"Tool {tc.name} returned error: {err_msg}"
-                            })
+                            obs_text = f"Result for {tc.name}: 0 items found."
+                            obs_summary = "0 items found."
 
-                    iter_duration = round((time.time() - iter_start_t) * 1000, 2)
-                    react_steps.append(
-                        ReActStep(
-                            iteration=iteration + 1,
-                            thought=thought,
-                            tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in initial_calls],
-                            observations=step_observations,
-                            duration_ms=iter_duration
-                        )
+                        logger.info(f"👁️ [OBSERVATION - Iteration {iteration + 1}]: Tool '{tc.name}' returned {len(step_items)} item(s) -> {obs_summary}")
+                        await notify_step({
+                            "type": "observation",
+                            "iteration": iteration + 1,
+                            "tool": tc.name,
+                            "success": True,
+                            "count": len(step_items),
+                            "summary": obs_summary,
+                            "items": [{"id": it.id, "title": it.title, "source": it.source, "author": it.author} for it in step_items[:3]]
+                        })
+                        step_observations.append({
+                            "tool": tc.name,
+                            "success": True,
+                            "items_count": len(step_items),
+                            "summary": obs_summary,
+                            "error": None
+                        })
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": obs_text
+                        })
+                    else:
+                        err_msg = res.error or "Unknown tool error"
+                        tool_failures.append({"tool": tc.name, "error": err_msg})
+                        logger.warning(f"👁️ [OBSERVATION - Iteration {iteration + 1}]: Tool '{tc.name}' FAILED -> {err_msg}")
+                        await notify_step({
+                            "type": "observation",
+                            "iteration": iteration + 1,
+                            "tool": tc.name,
+                            "success": False,
+                            "count": 0,
+                            "summary": f"Error: {err_msg}",
+                            "error": err_msg
+                        })
+                        step_observations.append({
+                            "tool": tc.name,
+                            "success": False,
+                            "items_count": 0,
+                            "summary": f"Error: {err_msg}",
+                            "error": err_msg
+                        })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": f"Tool {tc.name} returned error: {err_msg}"
+                        })
+
+                iter_duration = round((time.time() - iter_start_t) * 1000, 2)
+                react_steps.append(
+                    ReActStep(
+                        iteration=iteration + 1,
+                        thought=thought,
+                        tool_calls=[{"tool": tc.name, "arguments": tc.arguments, "call_id": tc.id} for tc in initial_calls],
+                        observations=step_observations,
+                        duration_ms=iter_duration
                     )
+                )
 
-                # Case B: LLM provided final answer content (no further tools required)
-                elif llm_response.content:
-                    synthesis_thought = llm_response.thought or "Sufficient evidence collected across enterprise systems. Concluding search and synthesizing final verified answer."
-                    logger.info(f"🧠 [THOUGHT - Iteration {iteration + 1}]: {synthesis_thought}")
-                    logger.info("🎯 [SYNTHESIS]: LLM concluded ReAct search loop. Proceeding to final synthesis.")
-                    await notify_step({"type": "thought", "iteration": iteration + 1, "content": synthesis_thought})
-                    iter_duration = round((time.time() - iter_start_t) * 1000, 2)
-                    react_steps.append(
-                        ReActStep(
-                            iteration=iteration + 1,
-                            thought=synthesis_thought,
-                            tool_calls=[],
-                            observations=[],
-                            duration_ms=iter_duration
-                        )
+            # Case B: LLM provided final answer content (no further tools required)
+            elif llm_response.content:
+                synthesis_thought = llm_response.thought or "Sufficient evidence collected across enterprise systems. Concluding search and synthesizing final verified answer."
+                logger.info(f"🧠 [THOUGHT - Iteration {iteration + 1}]: {synthesis_thought}")
+                logger.info("🎯 [SYNTHESIS]: LLM concluded ReAct search loop. Proceeding to final synthesis.")
+                await notify_step({"type": "thought", "iteration": iteration + 1, "content": synthesis_thought})
+                iter_duration = round((time.time() - iter_start_t) * 1000, 2)
+                react_steps.append(
+                    ReActStep(
+                        iteration=iteration + 1,
+                        thought=synthesis_thought,
+                        tool_calls=[],
+                        observations=[],
+                        duration_ms=iter_duration
                     )
-                    break
-
-        finally:
-            if force_demo:
-                self.tool_registry.jira.connector.mode = old_modes["jira"]
-                self.tool_registry.slack.connector.mode = old_modes["slack"]
-                self.tool_registry.gmail.connector.mode = old_modes["gmail"]
+                )
+                break
 
         # 5. Evidence Normalization & Freshness
         norm_span = GLOBAL_TRACER.add_span(root_span, "evidence_normalization", {"raw_items_count": len(all_raw_items)})

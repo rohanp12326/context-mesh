@@ -216,6 +216,10 @@ class CredentialVault:
         if service == "composio":
             return has_composio
 
+        if service == "web":
+            # Public web search is auth-free and only needs the Composio gateway key.
+            return has_composio
+
         if service == "jira":
             # Check Composio connected status
             if creds.get("composio_connected") or creds.get("composio_account_id"):
@@ -272,36 +276,20 @@ class CredentialVault:
         return False
 
     def get_connector_mode(self) -> str:
-        """Return global mode 'live', 'mock', or 'auto' (defaults to 'mock')."""
+        """Return global mode (defaults to 'live')."""
         store = self._read_all()
-        return store.get("system_config", {}).get("connector_mode", os.getenv("CONNECTOR_MODE", "mock"))
+        return store.get("system_config", {}).get("connector_mode", os.getenv("CONNECTOR_MODE", "live"))
 
     def set_connector_mode(self, mode: str):
-        """Set global execution mode ('live', 'mock', or 'auto')."""
+        """Set global execution mode ('live')."""
         store = self._read_all()
         sys_conf = store.setdefault("system_config", {})
         sys_conf["connector_mode"] = mode
         self._write_all(store)
 
     def get_service_mode(self, service: str) -> str:
-        """Determine whether an individual service should run in live or mock mode."""
-        store = self._read_all()
-        service_modes = store.get("service_modes", {})
-        if service in service_modes:
-            explicit = service_modes[service]
-            if explicit == "live" and not self.is_service_authenticated(service):
-                return "mock"
-            return explicit
-
-        global_mode = self.get_connector_mode()
-        if global_mode == "mock":
-            return "mock"
-        elif global_mode == "live":
-            # In live mode, only use live if authenticated, else fallback to mock
-            return "live" if self.is_service_authenticated(service) else "mock"
-        else:
-            # Auto / hybrid mode: live if authenticated, mock if not
-            return "live" if self.is_service_authenticated(service) else "mock"
+        """Always return 'live' mode for real enterprise data."""
+        return "live"
 
     def set_service_mode(self, service: str, mode: str):
         """Set execution mode for an individual service."""

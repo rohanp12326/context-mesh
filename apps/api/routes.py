@@ -35,7 +35,7 @@ async def health_check():
     return HealthResponse(
         status="healthy",
         version="0.1.0",
-        connector_mode=os.getenv("CONNECTOR_MODE", "mock"),
+        connector_mode=os.getenv("CONNECTOR_MODE", "live"),
         llm_provider=f"ZAI GLM API ({model})"
     )
 
@@ -50,7 +50,6 @@ async def handle_chat(req: ChatRequest):
             user_id=req.user_id,
             thread_id=req.thread_id,
             can_mutate=req.can_mutate,
-            force_demo=req.force_demo,
             allow_auth_gate=req.allow_auth_gate
         )
         return response

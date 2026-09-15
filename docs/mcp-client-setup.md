@@ -56,8 +56,8 @@ When connected to ContextMesh, your MCP client gains access to the following too
 ```
 *(Replace `/ABSOLUTE/PATH/TO/context-mesh` with the actual path to your repository).*
 
-> [!TIP]
-> To use offline synthetic demo data (Project Atlas sandbox) without configuring live enterprise API keys, set `"CONNECTOR_MODE": "mock"`.
+> [!NOTE]
+> ContextMesh operates strictly on live enterprise connectors (`CONNECTOR_MODE=live`). Ensure your `COMPOSIO_API_KEY` or direct service credentials are configured.
 
 3. Restart Claude Desktop. You will see a hammer icon indicating that the 8 ContextMesh tools are active and ready.
 
@@ -140,8 +140,8 @@ ContextMesh integrates with the **Composio MCP Gateway** to eliminate fragmented
      - `slack_post_message` -> `SLACK_POST_A_MESSAGE`
      - `gmail_search_messages` -> `GMAIL_FETCH_EMAILS`
      - `gmail_get_thread` -> `GMAIL_GET_THREAD`
-4. **Resilient Fallback**:
-   - If an integration is unauthenticated or the network is unavailable, ContextMesh gracefully falls back to the high-fidelity Project Atlas synthetic dataset (`synthetic_atlas.json`).
+4. **Strict Real Data Architecture**:
+   - ContextMesh always operates strictly on real data (`mode="live"`). If an integration is unauthenticated or the network is unavailable, it returns empty result sets or prompts for authentication—never falling back to synthetic mock data.
 
 ---
 
@@ -159,7 +159,7 @@ For organizations that strictly mandate direct provider-hosted MCP connections w
 
 ### 3.4 Connecting External Clients (Claude Desktop, Cursor) to ContextMesh
 
-External agents connect to the **ContextMesh Unified Mesh**, which orchestrates between Composio MCP, local caching, and offline synthetic data:
+External agents connect to the **ContextMesh Unified Mesh**, which orchestrates between Composio MCP, direct REST APIs, and durable memory:
 
 ```json
 {
