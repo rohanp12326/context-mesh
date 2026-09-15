@@ -22,6 +22,7 @@ DUMMY_CREDENTIAL_PATTERNS = {
     "your_slack_bot_token",
     "your_slack_user_token",
     "your_zai_api_key_here",
+    "your_opencode_api_key_here",
     "you@company.com",
     "https://your-domain.atlassian.net",
     "secrets/gmail_credentials.json",
@@ -273,7 +274,29 @@ class CredentialVault:
         elif service == "zai":
             key = creds.get("api_key") or os.getenv("ZAI_API_KEY") or os.getenv("ZHIPUAI_API_KEY", "")
             return is_valid_credential_value(key)
+        elif service == "opencode":
+            key = creds.get("api_key") or os.getenv("OPENCODE_API_KEY", "")
+            return is_valid_credential_value(key)
         return False
+
+    def get_active_llm_provider(self) -> str:
+        """Return the currently selected LLM provider ('zai' or 'opencode')."""
+        store = self._read_all()
+        provider = store.get("system_config", {}).get("active_llm_provider", "")
+        if provider in ("zai", "opencode"):
+            return provider
+        if self.is_service_authenticated("opencode") and not self.is_service_authenticated("zai"):
+            return "opencode"
+        return "zai"
+
+    def set_active_llm_provider(self, provider: str):
+        """Persist the selected LLM provider ('zai' or 'opencode')."""
+        if provider not in ("zai", "opencode"):
+            raise ValueError(f"Unsupported LLM provider: {provider}")
+        store = self._read_all()
+        sys_conf = store.setdefault("system_config", {})
+        sys_conf["active_llm_provider"] = provider
+        self._write_all(store)
 
     def get_connector_mode(self) -> str:
         """Return global mode (defaults to 'live')."""
@@ -308,12 +331,14 @@ class CredentialVault:
         mode = self.get_connector_mode()
 
         zai_data = store.get("zai", {})
+        opencode_data = store.get("opencode", {})
         jira_data = store.get("jira", {})
         slack_data = store.get("slack", {})
         gmail_data = store.get("gmail", {})
         composio_data = store.get("composio", {})
 
         zai_key = zai_data.get("api_key") or os.getenv("ZAI_API_KEY", "")
+        opencode_key = opencode_data.get("api_key") or os.getenv("OPENCODE_API_KEY", "")
         jira_token = jira_data.get("api_token") or os.getenv("JIRA_API_TOKEN", "")
         slack_token = slack_data.get("bot_token") or slack_data.get("user_token") or slack_data.get("api_key") or os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_USER_TOKEN") or os.getenv("SLACK_TOKEN", "")
         composio_key = composio_data.get("api_key") or os.getenv("COMPOSIO_API_KEY", "")
@@ -334,6 +359,15 @@ class CredentialVault:
                     "model": zai_data.get("model", os.getenv("ZAI_MODEL", "glm-4.5-air")),
                     "base_url": zai_data.get("base_url", os.getenv("ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")),
                     "masked_key": mask_secret(zai_key),
+                    "active": self.get_active_llm_provider() == "zai",
+                },
+                "opencode": {
+                    "is_configured": self.is_service_authenticated("opencode"),
+                    "mode": self.get_service_mode("opencode"),
+                    "model": opencode_data.get("model", os.getenv("OPENCODE_MODEL", "glm-5.3-flash")),
+                    "base_url": opencode_data.get("base_url", os.getenv("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1")),
+                    "masked_key": mask_secret(opencode_key),
+                    "active": self.get_active_llm_provider() == "opencode",
                 },
                 "jira": {
                     "is_configured": self.is_service_authenticated("jira"),

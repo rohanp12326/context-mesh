@@ -30,7 +30,12 @@ class AnswerSynthesizer:
     def __init__(self, llm_client: Optional[ZAIClient] = None):
         self.llm = llm_client or ZAIClient()
 
-    async def synthesize_direct(self, query: str, trace_id: Optional[str] = None) -> AgentResponse:
+    async def synthesize_direct(
+        self,
+        query: str,
+        trace_id: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None
+    ) -> AgentResponse:
         """Compose direct answer for general queries that require no enterprise evidence."""
         prompt = [
             {
@@ -40,9 +45,15 @@ class AnswerSynthesizer:
                     "Answer the user's question directly, clearly, and comprehensively using your general knowledge. "
                     "Do not mention Jira, Slack, or Gmail unless the user explicitly asks about them."
                 )
-            },
-            {"role": "user", "content": query}
+            }
         ]
+        if history:
+            for h in history:
+                if prompt and prompt[-1]["role"] == h["role"]:
+                    prompt[-1]["content"] += "\n" + h["content"]
+                else:
+                    prompt.append(dict(h))
+        prompt.append({"role": "user", "content": query})
 
         if self.llm.is_live:
             try:
@@ -72,10 +83,24 @@ class AnswerSynthesizer:
         evidence: List[Evidence],
         contradictions: List[Contradiction],
         trace_id: Optional[str] = None,
-        tool_failures: Optional[List[Dict[str, Any]]] = None
+        tool_failures: Optional[List[Dict[str, Any]]] = None,
+        draft_answer: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None
     ) -> AgentResponse:
         """Compose final cited answer."""
+        if draft_answer and draft_answer.strip().startswith('{"user_intent"'):
+            draft_answer = None
+
         if not evidence:
+            if draft_answer and draft_answer.strip():
+                return AgentResponse(
+                    answer=draft_answer,
+                    citations=[],
+                    confidence=0.6,
+                    plan=plan,
+                    contradictions=contradictions,
+                    trace_id=trace_id
+                )
             if tool_failures:
                 fail_details = "\n".join(f"- **{f.get('tool', 'tool')}**: {f.get('error', 'unknown error')}" for f in tool_failures)
                 msg = (
@@ -118,11 +143,22 @@ class AnswerSynthesizer:
             f"{conflict_context}\n\n"
             "Synthesize a clear, detailed, cited answer."
         )
+        if draft_answer and draft_answer.strip():
+            user_content += (
+                "\n\nThe retrieval agent's draft reasoning for this turn (use it to maintain "
+                f"conversational continuity, but cite only the evidence above):\n{draft_answer}"
+            )
 
-        messages = [
-            {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content}
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT}
         ]
+        if history:
+            for h in history:
+                if messages and messages[-1]["role"] == h["role"]:
+                    messages[-1]["content"] += "\n" + h["content"]
+                else:
+                    messages.append(dict(h))
+        messages.append({"role": "user", "content": user_content})
 
         if self.llm.is_live:
             try:

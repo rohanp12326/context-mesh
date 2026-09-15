@@ -2,6 +2,7 @@
 
 import json
 import time
+import uuid
 from typing import Any, Dict, Optional, Tuple
 import httpx
 from observability.logging import get_logger
@@ -80,6 +81,88 @@ async def verify_zai_connection(
         return False, f"Failed to connect to host '{clean_url}'. Check internet connection or base URL.", 0.0
     except Exception as e:
         logger.error(f"ZAI connection error: {e}", exc_info=True)
+        return False, f"Connection error: {str(e)}", 0.0
+
+
+async def verify_opencode_connection(
+    api_key: str,
+    base_url: str = "https://opencode.ai/zen/go/v1",
+    model: str = "glm-5.3-flash"
+) -> Tuple[bool, str, float]:
+    """Test OpenCode (Go subscription) connectivity via its OpenAI-compatible gateway."""
+    clean_key = (api_key or "").strip()
+    clean_url = (base_url or "https://opencode.ai/zen/go/v1").strip().rstrip("/")
+    clean_model = (model or "glm-5.3-flash").strip()
+
+    if not clean_key:
+        logger.warning("OpenCode connection test failed: API key is empty.")
+        return False, "API Key cannot be empty.", 0.0
+
+    url = f"{clean_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {clean_key}",
+        "Content-Type": "application/json",
+        "x-opencode-session": str(uuid.uuid4()),
+        "User-Agent": "context-mesh/0.1.0"
+    }
+    base_payload = {
+        "model": clean_model,
+        "messages": [{"role": "user", "content": "ping"}],
+        # OpenCode Go / Baseten reasoning models require a budget strictly greater than 1024.
+        "max_tokens": 2048
+    }
+    # Do not force reasoning_effort: the gateway maps "low" to an invalid thinking budget of 1.
+    # Only fall back to an explicit valid level when an upstream insists on one.
+    payloads = [base_payload, {**base_payload, "reasoning_effort": "high"}]
+
+    logger.info(f"Testing OpenCode connection: endpoint={url}, model={clean_model}")
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = None
+            latency = 0.0
+            for payload in payloads:
+                resp = await client.post(url, json=payload, headers=headers)
+                latency = round((time.time() - start) * 1000.0, 2)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    model_name = data.get("model", clean_model)
+                    logger.info(f"OpenCode connection test succeeded for model '{model_name}' ({latency}ms)")
+                    return True, f"Successfully connected to OpenCode! Model: {model_name} (Latency: {latency}ms)", latency
+                # Only retry with the explicit reasoning level if that is what upstream wants.
+                body_l = resp.text.lower()
+                if not any(k in body_l for k in ("reasoning", "thinking", "effort", "budget")):
+                    break
+
+            error_text = resp.text
+            logger.warning(f"OpenCode connection test returned HTTP {resp.status_code}: {error_text[:200]}")
+
+            if resp.status_code == 401:
+                return False, "Authentication failed (401 Unauthorized): Invalid OpenCode API key.", latency
+            elif resp.status_code == 404:
+                return (
+                    False,
+                    f"Model '{clean_model}' not found (404). Verify the model ID and that your "
+                    f"subscription includes it (chat-completions models: glm-*, kimi-*, deepseek-v4-*, mimo-*).",
+                    latency
+                )
+
+            try:
+                err_json = resp.json()
+                err_info = err_json.get("error", {})
+                code = str(err_info.get("code", ""))
+                msg = err_info.get("message", "")
+                if msg:
+                    return False, f"API error ({code}): {msg}", latency
+            except Exception:
+                pass
+
+            return False, f"API returned error {resp.status_code}: {error_text[:150]}", latency
+    except httpx.ConnectError:
+        logger.error(f"Failed to connect to host: {clean_url}")
+        return False, f"Failed to connect to host '{clean_url}'. Check your internet connection.", 0.0
+    except Exception as e:
+        logger.error(f"OpenCode connection error: {e}", exc_info=True)
         return False, f"Connection error: {str(e)}", 0.0
 
 
@@ -312,6 +395,7 @@ async def verify_composio_app_connection(
 
 # Aliases
 test_zai_connection = verify_zai_connection
+test_opencode_connection = verify_opencode_connection
 test_jira_connection = verify_jira_connection
 test_slack_connection = verify_slack_connection
 test_gmail_connection = verify_gmail_connection

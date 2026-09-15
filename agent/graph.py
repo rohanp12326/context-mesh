@@ -80,6 +80,11 @@ class ContextMeshAgent:
         # 1. Thread state & Working Memory Setup
         mem_span = GLOBAL_TRACER.add_span(root_span, "memory_retrieval")
         thread_state = self.short_term.get_or_create(thread_id, user_id=user_id)
+        prior_history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in thread_state.messages
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
         self.short_term.append_message(thread_id, "user", query)
         memory_context = self.planner.build_memory_context(query)
         resolved_entities = self.planner.resolve_entities(query)
@@ -93,7 +98,7 @@ class ContextMeshAgent:
             await notify_step({"type": "thought", "iteration": 0, "content": zero_thought})
 
             gen_span = GLOBAL_TRACER.add_span(root_span, "direct_answer_generation")
-            response = await self.synthesizer.synthesize_direct(query=query, trace_id=trace.trace_id)
+            response = await self.synthesizer.synthesize_direct(query=query, trace_id=trace.trace_id, history=prior_history[-10:])
             response.plan = QueryPlan(
                 user_intent="direct_answer",
                 entities=resolved_entities,
@@ -140,18 +145,26 @@ class ContextMeshAgent:
             "8. After observing results, inspect if evidence is sufficient. If yes, synthesize the answer with citations.\n"
             "9. For mutations (create_issue, post_message), formulate the tool call and stop for human approval.\n"
             "10. Point out conflicting information and note recent versus stale updates.\n"
+            "11. Prior conversation history for this thread is provided below. Use it to resolve "
+            "references to earlier topics, follow-up questions, and questions about the conversation itself "
+            "(e.g., 'what have we discussed so far?'), rather than treating the current query as isolated.\n"
         )
 
-        messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": react_system_prompt},
-            {"role": "user", "content": query}
-        ]
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": react_system_prompt}]
+        recent_history = prior_history[-10:]
+        for h in recent_history:
+            if messages and messages[-1]["role"] == h["role"]:
+                messages[-1]["content"] += "\n" + h["content"]
+            else:
+                messages.append(dict(h))
+        messages.append({"role": "user", "content": query})
 
         all_raw_items: List[ConnectorItem] = []
         executed_plan_steps: List[PlanStep] = []
         tool_failures: List[Dict[str, Any]] = []
         required_services: List[str] = []
         skipped_services: List[str] = []
+        llm_final_answer: Optional[str] = None
 
         scope = PermissionScope(
             user_id=user_id,
@@ -463,6 +476,7 @@ class ContextMeshAgent:
 
             # Case B: LLM provided final answer content (no further tools required)
             elif llm_response.content:
+                llm_final_answer = llm_response.content
                 synthesis_thought = llm_response.thought or "Sufficient evidence collected across enterprise systems. Concluding search and synthesizing final verified answer."
                 logger.info(f"🧠 [THOUGHT - Iteration {iteration + 1}]: {synthesis_thought}")
                 logger.info("🎯 [SYNTHESIS]: LLM concluded ReAct search loop. Proceeding to final synthesis.")
@@ -515,7 +529,9 @@ class ContextMeshAgent:
             evidence=ranked_evidence,
             contradictions=contradictions,
             trace_id=trace.trace_id,
-            tool_failures=tool_failures
+            tool_failures=tool_failures,
+            draft_answer=llm_final_answer,
+            history=recent_history
         )
         response.required_services = required_services
         response.skipped_services = skipped_services

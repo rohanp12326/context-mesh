@@ -13,6 +13,7 @@ from security.connection_testers import (
     test_composio_connection,
     test_composio_app_connection,
     test_zai_connection,
+    test_opencode_connection,
     test_jira_connection,
     test_slack_connection,
     test_gmail_connection,
@@ -73,7 +74,7 @@ def render_auth_wizard():
     # Service Tabs (5 tabs for compatibility)
     card_composio, card_zai, card_jira, card_slack, card_gmail = st.tabs([
         "⚡ Composio Gateway",
-        "🤖 AI Engine (ZAI)",
+        "🤖 AI Engine (ZAI / OpenCode)",
         "📌 Atlassian Jira",
         "💬 Slack",
         "📧 Gmail"
@@ -327,35 +328,98 @@ def render_auth_wizard():
             if comp_creds.get("api_key"):
                 st.caption(f"Active Key: `{mask_secret(comp_creds.get('api_key'))}` | User: `{comp_creds.get('user_id', 'default_user')}`")
 
-    # ------------------ ZAI GLM API ------------------
+    # ------------------ AI ENGINE (ZAI GLM / OpenCode Go) ------------------
     with card_zai:
-        st.markdown("#### 🤖 AI Foundation Model (ZAI GLM)")
+        st.markdown("#### 🤖 AI Foundation Model")
         st.caption("Select the LLM engine for reasoning, query decomposition, and synthesized answers.")
 
-        zai_creds = VAULT.get_credential("zai")
-        default_key = zai_creds.get("api_key", os.getenv("ZAI_API_KEY", ""))
-        default_model = zai_creds.get("model", os.getenv("ZAI_MODEL", "glm-4.5-air"))
-        default_url = zai_creds.get("base_url", os.getenv("ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"))
+        active_provider = VAULT.get_active_llm_provider()
+        provider_presets = {"ZAI GLM (Zhipu BigModel)": "zai", "OpenCode Go (Subscription)": "opencode"}
+        provider_label_to_id = {label: pid for label, pid in provider_presets.items()}
 
-        col_z1, col_z2 = st.columns([3, 2])
-        with col_z1:
-            zai_key_input = st.text_input("ZAI API Key", value=default_key, type="password", key="input_zai_key")
+        default_label = next((l for l, pid in provider_presets.items() if pid == active_provider), "ZAI GLM (Zhipu BigModel)")
+        selected_label = st.radio(
+            "Active AI Engine",
+            list(provider_presets.keys()),
+            index=list(provider_presets.keys()).index(default_label),
+            key="select_llm_provider",
+            horizontal=True,
+        )
+        selected_provider = provider_label_to_id[selected_label] if selected_label else "zai"
 
-        model_presets = ["glm-4.5-air", "glm-4-plus", "glm-4.5", "glm-4-flash", "glm-4-air", "glm-4-long", "glm-4"]
-        initial_idx = model_presets.index(default_model) if default_model in model_presets else 0
+        if selected_provider == "zai":
+            zai_creds = VAULT.get_credential("zai")
+            default_key = zai_creds.get("api_key", os.getenv("ZAI_API_KEY", ""))
+            default_model = zai_creds.get("model", os.getenv("ZAI_MODEL", "glm-4.5-air"))
+            default_url = zai_creds.get("base_url", os.getenv("ZAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"))
 
-        with col_z2:
-            zai_model_select = st.selectbox("Model Engine", model_presets, index=initial_idx, key="select_zai_model")
+            col_z1, col_z2 = st.columns([3, 2])
+            with col_z1:
+                zai_key_input = st.text_input("ZAI API Key", value=default_key, type="password", key="input_zai_key")
 
-        if st.button("⚡ Test & Save AI Key", key="btn_save_zai"):
-            if not zai_key_input:
-                st.error("Please enter your ZAI API Key.")
-            else:
-                with st.spinner("Connecting to ZAI GLM..."):
-                    ok, msg, _ = asyncio.run(test_zai_connection(zai_key_input, default_url, zai_model_select))
-                    if ok:
-                        VAULT.set_credential("zai", {"api_key": zai_key_input.strip(), "model": zai_model_select, "base_url": default_url.strip()})
-                        st.success(f"✅ {msg}")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {msg}")
+            model_presets = ["glm-4.5-air", "glm-4-plus", "glm-4.5", "glm-4-flash", "glm-4-air", "glm-4-long", "glm-4"]
+            initial_idx = model_presets.index(default_model) if default_model in model_presets else 0
+
+            with col_z2:
+                zai_model_select = st.selectbox("Model Engine", model_presets, index=initial_idx, key="select_zai_model")
+
+            if st.button("⚡ Test & Save AI Key", key="btn_save_zai"):
+                if not zai_key_input:
+                    st.error("Please enter your ZAI API Key.")
+                else:
+                    with st.spinner("Connecting to ZAI GLM..."):
+                        ok, msg, _ = asyncio.run(test_zai_connection(zai_key_input, default_url, zai_model_select))
+                        if ok:
+                            VAULT.set_credential("zai", {"api_key": zai_key_input.strip(), "model": zai_model_select, "base_url": default_url.strip()})
+                            VAULT.set_active_llm_provider("zai")
+                            st.success(f"✅ {msg}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+
+            if zai_creds.get("api_key"):
+                st.caption(f"Active Key: `{mask_secret(zai_creds.get('api_key'))}` | Model: `{zai_creds.get('model', '')}`")
+
+        else:
+            oc_creds = VAULT.get_credential("opencode")
+            oc_default_key = oc_creds.get("api_key", os.getenv("OPENCODE_API_KEY", ""))
+            oc_default_model = oc_creds.get("model", os.getenv("OPENCODE_MODEL", "glm-5.3-flash"))
+            oc_default_url = oc_creds.get("base_url", os.getenv("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1"))
+
+            col_o1, col_o2 = st.columns([3, 2])
+            with col_o1:
+                oc_key_input = st.text_input(
+                    "OpenCode API Key",
+                    value=oc_default_key,
+                    type="password",
+                    key="input_opencode_key",
+                    help="Copy your API key from the OpenCode console at opencode.ai/auth"
+                )
+
+            oc_model_presets = [
+                "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5",
+                "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+                "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+                "mimo-v2.5", "mimo-v2.5-pro", "longcat-2.0",
+            ]
+            oc_initial_idx = oc_model_presets.index(oc_default_model) if oc_default_model in oc_model_presets else 0
+
+            with col_o2:
+                oc_model_select = st.selectbox("Model Engine", oc_model_presets, index=oc_initial_idx, key="select_opencode_model")
+
+            if st.button("⚡ Test & Save OpenCode Key", key="btn_save_opencode"):
+                if not oc_key_input:
+                    st.error("Please enter your OpenCode API Key.")
+                else:
+                    with st.spinner("Connecting to OpenCode..."):
+                        ok, msg, _ = asyncio.run(test_opencode_connection(oc_key_input, oc_default_url, oc_model_select))
+                        if ok:
+                            VAULT.set_credential("opencode", {"api_key": oc_key_input.strip(), "model": oc_model_select, "base_url": oc_default_url.strip()})
+                            VAULT.set_active_llm_provider("opencode")
+                            st.success(f"✅ {msg}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+
+            if oc_creds.get("api_key"):
+                st.caption(f"Active Key: `{mask_secret(oc_creds.get('api_key'))}` | Model: `{oc_creds.get('model', '')}`")

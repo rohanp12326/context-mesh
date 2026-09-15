@@ -324,6 +324,9 @@ def render_message(msg: dict[str, Any]):
     avatar = "🧑" if is_user else "✨"
 
     with st.chat_message(role, avatar=avatar):
+        # Keep the reasoning trail above the answer, matching the live turn order.
+        render_reasoning(msg)
+
         content = msg.get("content", "")
         if not is_user and not st.session_state.dev_mode:
             content = humanize_answer(content)
@@ -350,7 +353,27 @@ def render_message(msg: dict[str, Any]):
             with st.expander("📋 Query plan (developer view)", expanded=False):
                 st.json(msg["plan"])
 
-        render_reasoning(msg)
+
+def scroll_chat_to_bottom():
+    """Pin the conversation to the latest message (traditional chat behaviour)."""
+    st.iframe(
+        """
+        <script>
+        (function () {
+            const doc = window.parent.document;
+            const targets = [
+                doc.querySelector('[data-testid="stMain"]'),
+                doc.querySelector('[data-testid="stAppScrollToBottomContainer"]'),
+                doc.querySelector('[data-testid="stAppViewContainer"]')
+            ];
+            for (const el of targets) {
+                if (el) { try { el.scrollTop = el.scrollHeight; } catch (e) {} }
+            }
+        })();
+        </script>
+        """,
+        height=1,
+    )
 
 
 def _assistant_message_dict(response) -> dict[str, Any]:
@@ -549,6 +572,38 @@ def inject_custom_css():
 
         /* Chat input */
         [data-testid="stChatInput"] textarea { font-size: 0.97rem; }
+
+        /* ChatGPT-style composer bar with inline model picker */
+        .st-key-composer_box {
+            border: 1px solid #d9d9e3;
+            border-radius: 26px;
+            background: #ffffff;
+            padding: 6px 8px 6px 18px;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+            max-width: 820px;
+            margin: 0 auto;
+        }
+        .st-key-composer_box [data-baseweb="input"],
+        .st-key-composer_box [data-baseweb="base-input"] {
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+        .st-key-composer_box [data-baseweb="select"] > div {
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            font-size: 0.84rem;
+            color: #6b6b80;
+            min-height: 0;
+        }
+        .st-key-composer_box .stForm { border: none; }
+        .st-key-composer_box [data-testid="stFormSubmitButton"] button {
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            padding: 0;
+        }
         </style>
         """,
         unsafe_allow_html=True
@@ -944,12 +999,59 @@ render_auth_challenge()
 render_pending_approval()
 
 # ---------------------------------------------------------
-# Chat input + agent execution
+# Composer (inline model picker + prompt) + agent execution
 # ---------------------------------------------------------
-chat_input_val = st.chat_input("Message ContextMesh…")
-user_input = st.session_state.preset_query or chat_input_val
-if st.session_state.preset_query:
+_PROVIDER_MODELS = {
+    "zai": ["glm-4.5-air", "glm-4-plus", "glm-4.5", "glm-4-flash", "glm-4-air", "glm-4-long", "glm-4"],
+    "opencode": [
+        "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5",
+        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+        "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+        "mimo-v2.5", "mimo-v2.5-pro", "longcat-2.0",
+    ],
+}
+_PROVIDER_LABELS = {"zai": "ZAI GLM", "opencode": "OpenCode Go"}
+
+_vault_inst = _vault()
+_active_provider = _vault_inst.get_active_llm_provider()
+_llm_creds = _vault_inst.get_credential(_active_provider)
+_models = _PROVIDER_MODELS.get(_active_provider, [])
+_ai_ready = bool(_llm_creds.get("api_key"))
+
+with st.bottom:
+    with st.container(key="composer_box"):
+        with st.form("composer", clear_on_submit=True, border=False):
+            _c_text, _c_model, _c_send = st.columns([7, 3, 1], vertical_alignment="center")
+            with _c_text:
+                _composer_text = st.text_input(
+                    "Message ContextMesh",
+                    placeholder="Message ContextMesh…" if _ai_ready else "Add an AI key in ⚙️ Settings to chat",
+                    label_visibility="collapsed",
+                    disabled=not _ai_ready,
+                    key="composer_text",
+                )
+            with _c_model:
+                _current_model = _llm_creds.get("model") or (_models[0] if _models else "")
+                _model_idx = _models.index(_current_model) if _current_model in _models else 0
+                _picked_model = st.selectbox(
+                    "Model",
+                    _models or ["No model"],
+                    index=_model_idx,
+                    label_visibility="collapsed",
+                    disabled=not (_ai_ready and _models),
+                    key="composer_model",
+                    help=f"Active engine: {_PROVIDER_LABELS.get(_active_provider, _active_provider)}. Model used for planning, retrieval, and answer synthesis.",
+                )
+            with _c_send:
+                _sent = st.form_submit_button("↑", use_container_width=True, disabled=not _ai_ready)
+
+if _sent and _ai_ready and _models and _picked_model != _llm_creds.get("model"):
+    _vault_inst.set_credential(_active_provider, {**_llm_creds, "model": _picked_model})
+
+_preset = st.session_state.preset_query
+if _preset:
     st.session_state.preset_query = None
+user_input = _preset or (_composer_text if (_sent and _ai_ready) else None)
 
 if user_input:
     st.session_state.pending_auth = None
@@ -961,7 +1063,7 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant", avatar="✨"):
-        status_box = st.status("Thinking…", expanded=False)
+        status_box = st.status("Thinking…", expanded=True)
         with status_box:
             console_box = st.container()
 
@@ -1037,3 +1139,6 @@ if user_input:
         if response.requires_approval and response.pending_mutation:
             st.session_state.pending_approval = response.pending_mutation
             st.rerun()
+
+# Keep the newest message in view after every render
+scroll_chat_to_bottom()

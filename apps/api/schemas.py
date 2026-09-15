@@ -29,7 +29,7 @@ class MemoryCreateRequest(BaseModel):
 
 
 class IntegrationConfigureRequest(BaseModel):
-    service: str  # zai | jira | slack | gmail | composio
+    service: str  # zai | opencode | jira | slack | gmail | composio
     credentials: Dict[str, Any]
 
 

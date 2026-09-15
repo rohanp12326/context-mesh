@@ -19,6 +19,7 @@ from connectors.base import PermissionScope
 from security.vault import VAULT
 from security.connection_testers import (
     test_zai_connection,
+    test_opencode_connection,
     test_jira_connection,
     test_slack_connection,
     test_gmail_connection
@@ -30,13 +31,16 @@ agent_instance = ContextMeshAgent()
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    zai_creds = VAULT.get_credential("zai")
-    model = zai_creds.get("model", os.getenv("ZAI_MODEL", "glm-4.5-air"))
+    provider = VAULT.get_active_llm_provider()
+    creds = VAULT.get_credential(provider)
+    default_model = os.getenv("OPENCODE_MODEL", "glm-5.3-flash") if provider == "opencode" else os.getenv("ZAI_MODEL", "glm-4.5-air")
+    model = creds.get("model", default_model)
+    label = "OpenCode" if provider == "opencode" else "ZAI GLM API"
     return HealthResponse(
         status="healthy",
         version="0.1.0",
         connector_mode=os.getenv("CONNECTOR_MODE", "live"),
-        llm_provider=f"ZAI GLM API ({model})"
+        llm_provider=f"{label} ({model})"
     )
 
 
@@ -126,7 +130,7 @@ async def get_integrations_status():
 @router.post("/integrations/configure")
 async def configure_integration(req: IntegrationConfigureRequest):
     """Save credentials securely into encrypted vault."""
-    if req.service not in ["zai", "jira", "slack", "gmail", "composio", "system_config"]:
+    if req.service not in ["zai", "opencode", "jira", "slack", "gmail", "composio", "system_config"]:
         raise HTTPException(status_code=400, detail=f"Unsupported service '{req.service}'")
     VAULT.set_credential(req.service, req.credentials)
     return {"status": "saved", "service": req.service, "vault_status": VAULT.get_status()}
@@ -147,6 +151,12 @@ async def test_integration(req: IntegrationTestRequest):
             api_key=creds.get("api_key", ""),
             base_url=creds.get("base_url", "https://open.bigmodel.cn/api/paas/v4/"),
             model=creds.get("model", "glm-4.5-air")
+        )
+    elif req.service == "opencode":
+        ok, msg, lat = await test_opencode_connection(
+            api_key=creds.get("api_key", ""),
+            base_url=creds.get("base_url", "https://opencode.ai/zen/go/v1"),
+            model=creds.get("model", "glm-5.3-flash")
         )
     elif req.service == "jira":
         ok, msg, lat = await test_jira_connection(
