@@ -46,6 +46,14 @@ class Citation(BaseModel):
     timestamp: Optional[str] = None
 
 
+class ReActStep(BaseModel):
+    iteration: int
+    thought: str
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+    observations: List[Dict[str, Any]] = Field(default_factory=list)
+    duration_ms: Optional[float] = None
+
+
 class AgentResponse(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     answer: str
@@ -61,6 +69,21 @@ class AgentResponse(BaseModel):
     required_services: List[str] = Field(default_factory=list)
     skipped_services: List[str] = Field(default_factory=list)
     auth_challenge: Optional[Dict[str, Any]] = None
+    react_steps: List[ReActStep] = Field(default_factory=list)
+    tool_failures: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("react_steps", mode="before")
+    @classmethod
+    def coerce_react_steps(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            res = []
+            for item in v:
+                if hasattr(item, "model_dump") and not isinstance(item, ReActStep):
+                    res.append(item.model_dump())
+                else:
+                    res.append(item)
+            return res
+        return v
 
     @field_validator("plan", mode="before")
     @classmethod

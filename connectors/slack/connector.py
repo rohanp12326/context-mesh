@@ -14,6 +14,50 @@ from observability.logging import get_logger
 logger = get_logger("connectors.slack")
 
 
+def _extract_slack_author(item: Dict[str, Any], profile_cache: Optional[Dict[str, Dict[str, str]]] = None) -> str:
+    """Extract human-readable author name from Slack message payload."""
+    if not isinstance(item, dict):
+        return "slack_user"
+
+    # 1. Check user ID against cached user profiles
+    user_id = item.get("user")
+    if profile_cache and user_id and user_id in profile_cache:
+        prof = profile_cache[user_id]
+        name = prof.get("real_name") or prof.get("display_name") or prof.get("first_name")
+        if name and isinstance(name, str) and name.strip():
+            return name.strip()
+
+    # 2. Direct author field
+    author_direct = item.get("author")
+    if author_direct and isinstance(author_direct, str) and author_direct.strip():
+        return author_direct.strip()
+
+    # 3. User profile object (standard in Slack search.messages when present)
+    user_profile = item.get("user_profile")
+    if isinstance(user_profile, dict):
+        for key in ["real_name", "display_name", "name", "first_name"]:
+            val = user_profile.get(key)
+            if val and isinstance(val, str) and val.strip():
+                return val.strip()
+
+    # 4. Direct human name fields
+    for key in ["real_name", "display_name", "user_name", "sender_name", "author_name"]:
+        val = item.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+
+    # 5. Fallback to username handle
+    username = item.get("username")
+    if username and isinstance(username, str) and username.strip():
+        return username.strip()
+
+    # 6. Fallback to user ID or slack_user
+    if user_id and isinstance(user_id, str) and user_id.strip():
+        return user_id.strip()
+
+    return "slack_user"
+
+
 class SlackConnector(BaseConnector):
     """Connector for searching and fetching Slack messages, threads, and canvases."""
 
@@ -33,6 +77,7 @@ class SlackConnector(BaseConnector):
         self._explicit_mcp_endpoint = mcp_endpoint
         self._explicit_mcp_token = mcp_token
         self._mock_data: Optional[Dict[str, Any]] = None
+        self._user_profile_cache: Dict[str, Dict[str, str]] = {}
 
     @property
     def mode(self) -> str:
@@ -92,24 +137,45 @@ class SlackConnector(BaseConnector):
         results = []
         q_lower = query.lower()
 
+        from_filter = None
+        from_match = re.search(r"from:([a-zA-Z0-9_.-]+)", q_lower)
+        if from_match:
+            from_filter = from_match.group(1).lower()
+
+        in_filter = None
+        in_match = re.search(r"in:([a-zA-Z0-9_.-]+)", q_lower)
+        if in_match:
+            in_filter = in_match.group(1).lower()
+
+        clean_q = re.sub(r"(from|in):[a-zA-Z0-9_.-]+", "", q_lower).replace("or", "").strip()
+        words = [w for w in clean_q.split() if len(w) > 2]
+
         for msg in messages:
-            haystack = f"{msg.get('id', '')} {msg.get('title', '')} {msg.get('channel', '')} {msg.get('content', '')}".lower()
-            words = [w for w in q_lower.split() if len(w) > 2]
-            if not words or any(w in haystack for w in words):
-                channel_name = msg.get("channel", "general")
-                default_title = msg.get("title") or f"Slack #{channel_name}"
+            author = str(msg.get("author") or "").lower()
+            channel_name = str(msg.get("channel") or "general").lower()
+            haystack = f"{msg.get('id', '')} {msg.get('title', '')} {channel_name} {author} {msg.get('content', '')}".lower()
+
+            matches_filter = True
+            if from_filter and from_filter not in author:
+                matches_filter = False
+            if in_filter and in_filter not in channel_name:
+                matches_filter = False
+
+            if matches_filter and (not words or any(w in haystack for w in words)):
+                channel_display = msg.get("channel", "general")
+                default_title = msg.get("title") or f"Slack #{channel_display}"
                 results.append(
                     ConnectorItem(
                         source="slack",
                         id=msg["id"],
                         title=default_title,
                         content=msg["content"],
-                        url=msg.get("url", f"https://slack.com/archives/{channel_name}/{msg['id']}"),
+                        url=msg.get("url", f"https://slack.com/archives/{channel_display}/{msg['id']}"),
                         author=msg.get("author"),
                         updated_at=msg.get("updated_at"),
                         raw_payload=msg,
                         metadata={
-                            "channel": channel_name,
+                            "channel": channel_display,
                             "updated_at": msg.get("updated_at")
                         }
                     )
@@ -136,32 +202,116 @@ class SlackConnector(BaseConnector):
                 )
         return None
 
-    async def search(self, query: str, limit: int = 10, scope: Optional[PermissionScope] = None) -> List[ConnectorItem]:
-        if scope and "read:slack" not in scope.allowed_scopes:
-            raise PermissionError("Access denied: missing 'read:slack' scope")
+    async def _resolve_user_profiles(self, user_ids: List[str], client: Any = None) -> None:
+        """Fetch and cache user profile information for Slack user IDs."""
+        missing = [u for u in set(user_ids) if u and isinstance(u, str) and u.startswith("U") and u not in self._user_profile_cache]
+        if not missing:
+            return
 
-        is_mcp_ready = bool(self.mcp_token and is_valid_credential_value(self.mcp_token))
-        is_composio_ready = bool(COMPOSIO_CLIENT.is_configured() and VAULT.is_composio_connected("slack"))
-        is_configured = bool(
-            is_mcp_ready
-            or is_composio_ready
-            or (self.bot_token and is_valid_credential_value(self.bot_token))
-            or (self.user_token and is_valid_credential_value(self.user_token))
-            or VAULT.is_service_authenticated("slack")
-        )
-        if self.mode == "mock" or not is_configured:
-            if self.mode != "mock" and not is_configured:
-                logger.info("Slack live credentials not configured; falling back to synthetic dataset.")
-            return self._search_mock(query, limit)
+        import asyncio
+
+        async def _fetch_one(uid: str):
+            # Remote MCP / Composio
+            if client:
+                try:
+                    res = await client.call_tool("SLACK_RETRIEVE_USER_PROFILE_INFORMATION", {"user": uid, "user_id": uid})
+                    if isinstance(res, dict) and res.get("profile"):
+                        prof = res["profile"]
+                        real_name = prof.get("real_name") or prof.get("display_name") or prof.get("first_name") or ""
+                        display_name = prof.get("display_name") or ""
+                        first_name = prof.get("first_name") or ""
+                        return uid, {
+                            "real_name": str(real_name).strip(),
+                            "display_name": str(display_name).strip(),
+                            "first_name": str(first_name).strip(),
+                        }
+                except Exception as e:
+                    logger.debug(f"Failed to fetch profile for {uid} via MCP: {e}")
+
+            # Direct Web API
+            active_token = self.user_token or self.bot_token
+            if active_token and is_valid_credential_value(active_token):
+                try:
+                    headers = {"Authorization": f"Bearer {active_token.strip()}"}
+                    async with httpx.AsyncClient() as http_client:
+                        resp = await http_client.get(
+                            "https://slack.com/api/users.profile.get",
+                            params={"user": uid},
+                            headers=headers,
+                            timeout=8.0
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("ok") and data.get("profile"):
+                                prof = data["profile"]
+                                real_name = prof.get("real_name") or prof.get("display_name") or prof.get("first_name") or ""
+                                display_name = prof.get("display_name") or ""
+                                first_name = prof.get("first_name") or ""
+                                return uid, {
+                                    "real_name": str(real_name).strip(),
+                                    "display_name": str(display_name).strip(),
+                                    "first_name": str(first_name).strip(),
+                                }
+                except Exception as e:
+                    logger.debug(f"Failed to fetch profile for {uid} via Web API: {e}")
+
+            return uid, {}
+
+        results = await asyncio.gather(*(_fetch_one(u) for u in missing), return_exceptions=True)
+        for r in results:
+            if isinstance(r, tuple):
+                uid, info = r
+                if info:
+                    self._user_profile_cache[uid] = info
+
+    def _extract_author(self, item: Dict[str, Any]) -> str:
+        """Extract human-readable author name using cached user profiles."""
+        return _extract_slack_author(item, self._user_profile_cache)
+
+    @staticmethod
+    def _extract_target_entity(query: str) -> Optional[str]:
+        """Extract the target person/entity being inquired about, ignoring self-pronouns."""
+        meta = {"me", "my", "mine", "all", "here", "channel", "everyone", "us"}
+
+        # 1. from:<target> (where target != me)
+        from_m = re.search(r"from:([a-zA-Z0-9_.-]+)", query, re.IGNORECASE)
+        if from_m and from_m.group(1).lower() not in meta:
+            return from_m.group(1).strip().lower()
+
+        # 2. to:<target> (where target != me)
+        to_m = re.search(r"to:([a-zA-Z0-9_.-]+)", query, re.IGNORECASE)
+        if to_m and to_m.group(1).lower() not in meta:
+            return to_m.group(1).strip().lower()
+
+        # 3. with:<target> or with @<target>
+        with_m = re.search(r"\bwith(?:\s+|:)(?:@)?([a-zA-Z0-9_.-]+)", query, re.IGNORECASE)
+        if with_m and with_m.group(1).lower() not in meta:
+            return with_m.group(1).strip().lower()
+
+        # 4. Natural language from/by
+        nl_from = re.search(r"\b(?:messages?\s+)?(?:from|by)\s+@?([a-zA-Z0-9_.-]+)", query, re.IGNORECASE)
+        if nl_from and nl_from.group(1).lower() not in meta:
+            return nl_from.group(1).strip().lower()
+
+        # 5. Standalone entity
+        clean = query.strip()
+        if clean != "*" and len(clean.split()) <= 2 and not any(op in clean for op in [":", '"', "'"]):
+            if clean.lower() not in meta:
+                return clean.lower()
+
+        return None
 
     @staticmethod
     def _sanitize_slack_query(query: str) -> str:
         """Normalize user query for Slack search API.
 
         Slack search API requires a non-empty string and performs literal keyword matching.
-        If the query is empty or composed exclusively of recency/meta words (e.g. 'latest', 'recent',
-        'messages', 'what is my latest slack messages'), literal search will either error ('no_query')
-        or return 0 matches. In such cases, we convert the query to '*' (wildcard matching all recent messages).
+        1. If the query is empty or composed exclusively of recency/meta words, convert to '*' (wildcard).
+        2. Preserves explicit Slack search syntax (e.g. 'from:@user', 'in:#channel').
+        3. Simplifies conversational 'from:me to:<person>' -> '<person>' and 'from:<person> to:me' -> 'from:<person>'
+           because Slack API does not support recipient channel filtering with to:me.
+        4. Strips conversational stop-words while leaving the core entity/keyword clean.
+        5. Does NOT inject invalid boolean operators like 'OR from:<name>', which break Slack's search parser.
         """
         if not query:
             return "*"
@@ -169,18 +319,72 @@ class SlackConnector(BaseConnector):
         if not clean or clean in ("*", '""', "''", "all"):
             return "*"
 
-        words = re.findall(r"[a-zA-Z0-9]+", clean.lower())
-        if not words:
+        # If query has from:me to:<person>, simplify to <person>
+        m_from_me_to = re.search(r"from:me\s+to:([a-zA-Z0-9_.-]+)", clean, re.IGNORECASE)
+        if m_from_me_to:
+            return m_from_me_to.group(1).strip()
+
+        # If query has from:<person> to:me, strip to:me
+        m_from_to_me = re.search(r"from:([a-zA-Z0-9_.-]+)\s+to:me", clean, re.IGNORECASE)
+        if m_from_to_me:
+            return f"from:{m_from_to_me.group(1).strip()}"
+
+        # If query is just to:me, convert to wildcard *
+        if clean.lower() == "to:me":
             return "*"
 
         meta_words = {
-            "what", "is", "are", "my", "the", "latest", "recent", "new", "newest",
+            "what", "is", "are", "my", "mine", "the", "latest", "recent", "new", "newest",
             "slack", "messages", "message", "msg", "msgs", "chat", "chats",
             "show", "get", "fetch", "check", "find", "read", "list", "all",
-            "inbox", "channel", "channels"
+            "inbox", "channel", "channels", "any", "does", "have", "has", "for", "me",
+            "there", "tell", "about", "give", "display", "see", "conversation", "conversations"
         }
-        if all(w in meta_words for w in words):
+
+        words = re.findall(r"[a-zA-Z0-9_.-]+", clean.lower())
+        if not words or all(w in meta_words for w in words):
             return "*"
+
+        # If user/LLM already provided explicit Slack search operators, preserve as-is
+        slack_operators = ["from:", "to:", "in:", "has:", "before:", "after:", "is:"]
+        if any(op in clean.lower() for op in slack_operators):
+            return clean
+
+        # Natural language pattern: "from <target>" or "by <target>" or "messages from <target>"
+        from_match = re.search(r"\b(?:messages?\s+)?(?:from|by)\s+@?([a-zA-Z0-9_.-]+)", clean, re.IGNORECASE)
+        if from_match:
+            target = from_match.group(1).strip()
+            if target.lower() not in meta_words:
+                return f"from:{target}"
+
+        # Natural language pattern: "with <target>" or "conversation with <target>"
+        with_match = re.search(r"\bwith(?:\s+|:)(?:@)?([a-zA-Z0-9_.-]+)", clean, re.IGNORECASE)
+        if with_match:
+            target = with_match.group(1).strip()
+            if target.lower() not in meta_words:
+                return target
+
+        # Natural language pattern: "in channel <target>" or "in #<target>"
+        in_match = re.search(r"\bin\s+(?:channel\s+)?#?([a-zA-Z0-9_.-]+)", clean, re.IGNORECASE)
+        if in_match:
+            target = in_match.group(1).strip()
+            if target.lower() not in meta_words:
+                return f"in:{target}"
+
+        # Natural language pattern: "to <target>"
+        to_match = re.search(r"\b(?:messages?\s+)?to\s+@?([a-zA-Z0-9_.-]+)", clean, re.IGNORECASE)
+        if to_match:
+            target = to_match.group(1).strip()
+            if target.lower() == "me":
+                return "*"
+            if target.lower() not in meta_words:
+                return f"to:{target}"
+
+        # Conversational extraction: e.g. "are there any conversation of mine with monali" -> remaining non-meta words
+        content_words = [w for w in re.findall(r"[a-zA-Z0-9_.-]+", clean) if w.lower() not in meta_words]
+        if content_words:
+            return " ".join(content_words)
+
         return clean
 
     async def search(self, query: str, limit: int = 10, scope: Optional[PermissionScope] = None) -> List[ConnectorItem]:
@@ -223,39 +427,105 @@ class SlackConnector(BaseConnector):
                     "Content-Type": "application/json; charset=utf-8"
                 }
                 async with httpx.AsyncClient() as client:
+                    clean_live_q = self._sanitize_slack_query(query)
                     resp = await client.get(
                         "https://slack.com/api/search.messages",
-                        params={"query": query, "count": limit},
+                        params={"query": clean_live_q, "count": limit},
                         headers=headers,
                         timeout=12.0
                     )
+                    raw_matches = []
+                    seen_ids = set()
                     if resp.status_code == 200:
                         data = resp.json()
                         if data.get("ok"):
-                            items = []
-                            matches = data.get("messages", {}).get("matches", [])
-                            for m in matches:
-                                channel_info = m.get("channel", {})
-                                channel_name = channel_info.get("name") if isinstance(channel_info, dict) else str(channel_info)
-                                msg_text = m.get("text", "")
-                                author = m.get("username") or m.get("user", "slack_user")
-                                ts = m.get("ts", "")
-                                permalink = m.get("permalink", f"https://slack.com/archives/{channel_name}/p{ts.replace('.', '')}")
+                            for m in data.get("messages", {}).get("matches", []):
+                                tid = str(m.get("ts") or m.get("id") or "")
+                                if tid and tid not in seen_ids:
+                                    seen_ids.add(tid)
+                                    raw_matches.append(m)
 
-                                items.append(
-                                    ConnectorItem(
-                                        source="slack",
-                                        id=f"slack-msg-{ts}",
-                                        title=f"Slack #{channel_name}: {msg_text[:50]}",
-                                        content=msg_text,
-                                        url=permalink,
-                                        author=author,
-                                        updated_at=m.get("updated_at") or ts,
-                                        raw_payload=m,
-                                        metadata={"channel": channel_name, "ts": ts}
-                                    )
-                                )
-                            return items[:limit]
+                    # Detect target author
+                    target_author = self._extract_target_entity(clean_live_q) or self._extract_target_entity(query)
+
+                    # Fallback for target author or 0 matches
+                    if target_author or len(raw_matches) == 0:
+                        wild_resp = await client.get(
+                            "https://slack.com/api/search.messages",
+                            params={"query": "*", "count": 20},
+                            headers=headers,
+                            timeout=12.0
+                        )
+                        if wild_resp.status_code == 200:
+                            wdata = wild_resp.json()
+                            if wdata.get("ok"):
+                                for m in wdata.get("messages", {}).get("matches", []):
+                                    tid = str(m.get("ts") or m.get("id") or "")
+                                    if tid and tid not in seen_ids:
+                                        seen_ids.add(tid)
+                                        raw_matches.append(m)
+
+                        if target_author and clean_live_q != target_author:
+                            kw_resp = await client.get(
+                                "https://slack.com/api/search.messages",
+                                params={"query": target_author, "count": limit},
+                                headers=headers,
+                                timeout=12.0
+                            )
+                            if kw_resp.status_code == 200:
+                                kdata = kw_resp.json()
+                                if kdata.get("ok"):
+                                    for m in kdata.get("messages", {}).get("matches", []):
+                                        tid = str(m.get("ts") or m.get("id") or "")
+                                        if tid and tid not in seen_ids:
+                                            seen_ids.add(tid)
+                                            raw_matches.append(m)
+
+                    # Resolve profiles
+                    uids = [m.get("user") for m in raw_matches if m.get("user") and isinstance(m.get("user"), str)]
+                    await self._resolve_user_profiles(uids)
+
+                    # Build items
+                    authored = []
+                    mentions = []
+                    others = []
+                    for m in raw_matches:
+                        channel_info = m.get("channel", {})
+                        channel_name = channel_info.get("name") if isinstance(channel_info, dict) else str(channel_info)
+                        msg_text = m.get("text", "")
+                        author = self._extract_author(m)
+                        uname = str(m.get("username") or "")
+                        ts = m.get("ts", "")
+                        permalink = m.get("permalink", f"https://slack.com/archives/{channel_name}/p{ts.replace('.', '')}")
+
+                        c_item = ConnectorItem(
+                            source="slack",
+                            id=f"slack-msg-{ts}",
+                            title=f"Slack #{channel_name}: {msg_text[:50]}",
+                            content=msg_text,
+                            url=permalink,
+                            author=author,
+                            updated_at=m.get("updated_at") or ts,
+                            raw_payload=m,
+                            metadata={"channel": channel_name, "ts": ts}
+                        )
+                        if target_author:
+                            if target_author in author.lower() or target_author in uname.lower():
+                                authored.append(c_item)
+                            elif target_author in msg_text.lower():
+                                mentions.append(c_item)
+                            else:
+                                others.append(c_item)
+                        else:
+                            others.append(c_item)
+
+                    if target_author:
+                        combined = authored + mentions
+                        if combined:
+                            return combined[:limit]
+                        return others[:limit]
+                    if others:
+                        return others[:limit]
             except Exception as e:
                 logger.warning(f"Slack live search API call failed: {e}. Falling back to mock dataset.")
 
@@ -272,6 +542,10 @@ class SlackConnector(BaseConnector):
         )
 
         clean_query = self._sanitize_slack_query(query)
+
+        # Detect target person if query is seeking messages from/by someone or targeting an entity
+        target_author = self._extract_target_entity(clean_query) or self._extract_target_entity(query)
+
         data = None
         last_error = None
 
@@ -284,7 +558,6 @@ class SlackConnector(BaseConnector):
             except Exception as e:
                 last_error = e
                 logger.debug(f"Slack MCP tool {tool_name} failed: {e}")
-                # If error is no_query or invalid query, retry once with wildcard '*'
                 if clean_query != "*" and "no_query" in str(e).lower():
                     try:
                         clean_query = "*"
@@ -296,51 +569,71 @@ class SlackConnector(BaseConnector):
                         continue
                 continue
 
-        # If keyword search returned 0 matches and query had recency intent, retry with wildcard '*'
-        if isinstance(data, dict) and clean_query != "*":
-            msg_obj = data.get("messages")
-            matches = msg_obj.get("matches", []) if isinstance(msg_obj, dict) else (data.get("matches") or [])
-            if not matches and any(w in query.lower() for w in ["latest", "recent", "new", "message", "all"]):
-                logger.info(f"Slack search for '{clean_query}' returned 0 matches; retrying with wildcard '*' for recent messages.")
+        # Extract primary matches
+        raw_matches = []
+        seen_ids = set()
+
+        def _collect_matches(payload: Any):
+            if not payload:
+                return
+            if isinstance(payload, str):
                 try:
-                    retry_data = await client.call_tool("SLACK_SEARCH_MESSAGES", {"query": "*", "limit": limit, "count": limit})
-                    if retry_data is not None:
-                        data = retry_data
-                except Exception as e:
-                    logger.debug(f"Wildcard retry failed: {e}")
+                    payload = json.loads(payload)
+                except Exception:
+                    return
+            items = []
+            if isinstance(payload, list):
+                items = payload
+            elif isinstance(payload, dict):
+                msg_obj = payload.get("messages")
+                if isinstance(msg_obj, dict):
+                    items = msg_obj.get("matches") or msg_obj.get("items") or []
+                elif isinstance(msg_obj, list):
+                    items = msg_obj
+                else:
+                    items = payload.get("matches") or payload.get("results") or payload.get("items") or []
+            for it in items:
+                if isinstance(it, dict):
+                    tid = str(it.get("ts") or it.get("id") or it.get("iid") or "")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        raw_matches.append(it)
+                    elif not tid:
+                        raw_matches.append(it)
 
-        if data is None:
-            if last_error:
-                raise last_error
-            return []
+        _collect_matches(data)
 
-        if isinstance(data, str):
+        # Fallback & expansion logic:
+        # If target_author was specified, or if primary query returned 0 matches
+        if target_author or len(raw_matches) == 0:
+            # 1. Fetch recent messages with wildcard '*' to find unindexed or non-keyword responses
             try:
-                data = json.loads(data)
-            except Exception:
-                pass
+                wildcard_data = await client.call_tool("SLACK_SEARCH_MESSAGES", {"query": "*", "limit": 20, "count": 20})
+                _collect_matches(wildcard_data)
+            except Exception as e:
+                logger.debug(f"Slack wildcard fallback failed: {e}")
 
-        if isinstance(data, dict):
-            if data.get("error") or data.get("is_error"):
-                logger.warning(f"Slack MCP returned error: {data.get('message') or data}")
-                return []
+            # 2. If target_author was detected, also query keyword search for target_author to catch mentions
+            if target_author and clean_query != target_author:
+                try:
+                    kw_data = await client.call_tool("SLACK_SEARCH_MESSAGES", {"query": target_author, "limit": limit, "count": limit})
+                    _collect_matches(kw_data)
+                except Exception as e:
+                    logger.debug(f"Slack keyword fallback for '{target_author}' failed: {e}")
 
-        raw_items = []
-        if isinstance(data, list):
-            raw_items = data
-        elif isinstance(data, dict):
-            msg_obj = data.get("messages")
-            if isinstance(msg_obj, dict):
-                raw_items = msg_obj.get("matches") or msg_obj.get("items") or []
-            elif isinstance(msg_obj, list):
-                raw_items = msg_obj
-            else:
-                raw_items = data.get("matches") or data.get("results") or data.get("items") or []
+        if not raw_matches and last_error:
+            raise last_error
 
-        items: List[ConnectorItem] = []
-        for idx, item in enumerate(raw_items):
-            if not isinstance(item, dict):
-                continue
+        # Resolve profiles for all distinct users
+        uids = [m.get("user") for m in raw_matches if m.get("user") and isinstance(m.get("user"), str)]
+        await self._resolve_user_profiles(uids, client=client)
+
+        # Build ConnectorItem list with resolved author metadata
+        authored_items: List[ConnectorItem] = []
+        mention_items: List[ConnectorItem] = []
+        other_items: List[ConnectorItem] = []
+
+        for idx, item in enumerate(raw_matches):
             item_id = str(item.get("id") or item.get("ts") or item.get("iid") or f"mcp-slack-{idx}")
             channel = item.get("channel") or item.get("channel_name") or "general"
             if isinstance(channel, dict):
@@ -356,21 +649,39 @@ class SlackConnector(BaseConnector):
                 except Exception:
                     iso_time = str(ts_val)
 
-            items.append(
-                ConnectorItem(
-                    source="slack",
-                    id=item_id,
-                    title=str(title),
-                    content=str(msg_text),
-                    url=url,
-                    author=item.get("author") or item.get("username") or item.get("user") or "slack_user",
-                    created_at=iso_time,
-                    updated_at=iso_time,
-                    raw_payload=item,
-                    metadata={"channel": channel, "mcp": True}
-                )
+            author = self._extract_author(item)
+            uname = str(item.get("username") or "")
+
+            c_item = ConnectorItem(
+                source="slack",
+                id=item_id,
+                title=str(title),
+                content=str(msg_text),
+                url=url,
+                author=author,
+                created_at=iso_time,
+                updated_at=iso_time,
+                raw_payload=item,
+                metadata={"channel": channel, "mcp": True}
             )
-        return items[:limit]
+
+            if target_author:
+                if target_author in author.lower() or target_author in uname.lower():
+                    authored_items.append(c_item)
+                elif target_author in msg_text.lower():
+                    mention_items.append(c_item)
+                else:
+                    other_items.append(c_item)
+            else:
+                other_items.append(c_item)
+
+        if target_author:
+            # If target person was requested, prioritize messages authored by them!
+            # Include mentions as well so the agent has full context of incoming vs outgoing.
+            combined = authored_items + mention_items
+            return combined[:limit]
+
+        return other_items[:limit]
 
     async def get_by_id(self, item_id: str, scope: Optional[PermissionScope] = None) -> Optional[ConnectorItem]:
         if scope and "read:slack" not in scope.allowed_scopes:

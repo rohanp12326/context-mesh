@@ -207,7 +207,8 @@ class GmailConnector(BaseConnector):
             ).lower()
 
             # Keyword matching
-            words = [w for w in q_lower.replace('"', '').split() if len(w) > 2 and not w.startswith("newer_than")]
+            meta_words = {"what", "are", "my", "recent", "latest", "mails", "email", "emails", "messages", "inbox", "show", "get"}
+            words = [w for w in q_lower.replace('"', '').split() if len(w) > 2 and not w.startswith("newer_than") and w not in meta_words]
             if not words or any(w in haystack for w in words):
                 first_msg = thread.get("messages", [{}])[0]
                 results.append(

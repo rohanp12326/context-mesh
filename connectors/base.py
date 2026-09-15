@@ -25,6 +25,7 @@ class ConnectorItem(BaseModel):
     updated_at: Optional[str] = None
     raw_payload: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    source_mode: str = "mock"
 
 
 class BaseConnector(ABC):

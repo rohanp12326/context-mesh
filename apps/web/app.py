@@ -5,6 +5,7 @@ import os
 import json
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Ensure project root is in sys.path regardless of execution directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -71,14 +72,34 @@ def _agent_response_is_fresh() -> bool:
     except Exception:
         return False
 
-# Initialize or refresh agent instance in session state if method signature updated
+def _get_codebase_version() -> float:
+    """Return the latest mtime among python source files in key packages."""
+    max_mtime = 0.0
+    for folder in ("agent", "connectors", "retrieval", "security", "memory", "observability", "apps"):
+        folder_path = PROJECT_ROOT / folder
+        if folder_path.exists():
+            for p in folder_path.rglob("*.py"):
+                try:
+                    mtime = p.stat().st_mtime
+                    if mtime > max_mtime:
+                        max_mtime = mtime
+                except OSError:
+                    pass
+    return max_mtime
+
+current_code_version = _get_codebase_version()
+
+# Initialize or refresh agent instance in session state if method signature or codebase updated
 _needs_reload = (
     "agent" not in st.session_state
+    or st.session_state.agent is None
     or not hasattr(st.session_state.agent, "run")
     or "allow_auth_gate" not in inspect.signature(st.session_state.agent.run).parameters
     or "skip_unauthenticated" not in inspect.signature(st.session_state.agent.run).parameters
+    or "on_step" not in inspect.signature(st.session_state.agent.run).parameters
     or not hasattr(_vault(), "get_missing_services")
     or not _agent_response_is_fresh()
+    or st.session_state.get("_code_version") != current_code_version
 )
 if _needs_reload:
     reload_all_mesh_modules()
@@ -86,6 +107,7 @@ if _needs_reload:
     import agent.state
     import agent.graph
     st.session_state.agent = agent.graph.ContextMeshAgent()
+    st.session_state._code_version = current_code_version
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -190,6 +212,34 @@ with tab_chat:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if "react_steps" in msg and msg["react_steps"]:
+                with st.expander(f"⚡ ReAct Agent Trace ({len(msg['react_steps'])} Step{'s' if len(msg['react_steps']) > 1 else ''})", expanded=False):
+                    with st.container(height=300, border=True):
+                        for step in msg["react_steps"]:
+                            it_num = step.get("iteration", 1)
+                            st.markdown(f"##### 🔄 Round {it_num}")
+                            thought = step.get("thought", "")
+                            if thought:
+                                st.info(f"🧠 **Thought**: {thought}")
+                            tool_calls = step.get("tool_calls", [])
+                            if tool_calls:
+                                st.markdown("**🛠️ Action(s):**")
+                                for tc in tool_calls:
+                                    tool_name = tc.get("tool", "tool")
+                                    args = tc.get("arguments", {})
+                                    st.code(f"{tool_name}({json.dumps(args, indent=2, ensure_ascii=False)})", language="python")
+                            observations = step.get("observations", [])
+                            if observations:
+                                st.markdown("**👁️ Observation(s):**")
+                                for obs in observations:
+                                    t_name = obs.get("tool", "")
+                                    count = obs.get("items_count", 0)
+                                    summary = obs.get("summary", "")
+                                    if obs.get("success", True):
+                                        st.markdown(f"- ✅ **`{t_name}`**: {summary or f'{count} items returned'}")
+                                    else:
+                                        st.markdown(f"- ❌ **`{t_name}`**: {obs.get('error', 'Error')}")
+                            st.divider()
             if "plan" in msg and msg["plan"]:
                 with st.expander("📋 View Decomposed Query Plan", expanded=False):
                     st.json(msg["plan"])
@@ -452,73 +502,108 @@ with tab_chat:
 
         # Run agent
         with st.chat_message("assistant"):
-            with st.spinner("Decomposing query and checking live application connections..."):
-                response = run_agent_async(
-                    query=user_input,
-                    thread_id="streamlit_session",
-                    can_mutate=False,
-                    allow_auth_gate=True
-                )
+            status_box = st.status("🧠 ContextMesh ReAct Agent: Reasoning & Retrieving...", expanded=True)
+            with status_box:
+                console_box = st.container(height=300, border=True, autoscroll=True)
 
-                st.session_state.last_response = response
+            def handle_ui_step(event: Dict[str, Any]):
+                etype = event.get("type")
+                iteration = event.get("iteration", 1)
+                if etype == "iteration_start":
+                    console_box.markdown(f"##### 🔄 Round {iteration}")
+                elif etype == "thought":
+                    content = event.get("content", "")
+                    console_box.info(f"🧠 **Thought**: {content}")
+                elif etype == "action":
+                    tool = event.get("tool", "")
+                    args = event.get("arguments", {})
+                    console_box.markdown(f"🛠️ **Action**: Invoking `{tool}`")
+                    console_box.code(f"{tool}({json.dumps(args, indent=2, ensure_ascii=False)})", language="python")
+                elif etype == "observation":
+                    tool = event.get("tool", "")
+                    count = event.get("count", 0)
+                    summary = event.get("summary", "")
+                    if event.get("success", True):
+                        console_box.markdown(f"- ✅ **`{tool}`**: {summary or f'{count} items returned'}")
+                    else:
+                        console_box.markdown(f"- ❌ **`{tool}`**: {event.get('error', 'Failed')}")
+                elif etype == "synthesis":
+                    console_box.markdown("🎯 **Cross-referencing evidence and synthesizing response...**")
 
-                # If authentication is required for missing services, pause and trigger auth challenge
-                if response.auth_required:
-                    st.session_state.pending_auth = response.auth_challenge
-                    st.rerun()
+            response = run_agent_async(
+                query=user_input,
+                thread_id="streamlit_session",
+                can_mutate=False,
+                allow_auth_gate=True,
+                on_step=handle_ui_step
+            )
 
-                # Display Decomposed Plan
-                if response.plan:
-                    st.markdown("##### 🧭 Decomposed Query Plan")
-                    cols = st.columns(len(response.plan.steps) if response.plan.steps else 1)
-                    for idx, step in enumerate(response.plan.steps):
-                        with cols[idx % len(cols)]:
-                            tool_name = step.tool.split(".")[0].upper()
-                            st.info(f"**Step {idx+1}**: {tool_name}\n*{step.purpose}*")
+            rounds_count = len(response.react_steps) if response.react_steps else 1
+            status_box.update(
+                label=f"✅ ReAct Execution Complete ({rounds_count} Round{'s' if rounds_count > 1 else ''})",
+                state="complete"
+            )
 
-                # Data Source Transparency Badge
-                live_svcs = [
-                    s for s in response.required_services
-                    if _vault().is_service_authenticated(s) and _vault().get_service_mode(s) == "live"
-                ]
-                demo_svcs = [s for s in response.required_services if s not in live_svcs]
-                if live_svcs:
-                    st.success(f"🟢 **Live Data Retrieved From**: {', '.join(s.upper() for s in live_svcs)}")
-                if getattr(response, "skipped_services", None):
-                    st.info(f"⚪ **Skipped (Not Authenticated)**: {', '.join(s.upper() for s in response.skipped_services)}")
-                if demo_svcs:
-                    st.caption(f"🧪 **Demo Data Used For**: {', '.join(s.upper() for s in demo_svcs)}")
+            st.session_state.last_response = response
 
-                # Display Contradictions
-                if response.contradictions:
-                    st.warning("⚠️ **Contradictions / Stale Data Detected**")
-                    for c in response.contradictions:
-                        st.markdown(f"**{c.topic}**: {c.description}")
+            # If authentication is required for missing services, pause and trigger auth challenge
+            if response.auth_required:
+                st.session_state.pending_auth = response.auth_challenge
+                st.rerun()
 
-                # Display Answer
-                st.markdown(response.answer)
+            # Display Decomposed Plan
+            if response.plan:
+                st.markdown("##### 🧭 Decomposed Query Plan")
+                cols = st.columns(len(response.plan.steps) if response.plan.steps else 1)
+                for idx, step in enumerate(response.plan.steps):
+                    with cols[idx % len(cols)]:
+                        tool_name = step.tool.split(".")[0].upper()
+                        st.info(f"**Step {idx+1}**: {tool_name}\n*{step.purpose}*")
 
-                # Display Citations
-                if response.citations:
-                    st.markdown("##### 📌 Evidence Citations")
-                    for cit in response.citations:
-                        source = cit.get("source_type", "") if isinstance(cit, dict) else getattr(cit, "source_type", "")
-                        claim = cit.get("claim", "") if isinstance(cit, dict) else getattr(cit, "claim", "")
-                        url = cit.get("source_url", "#") if isinstance(cit, dict) else getattr(cit, "source_url", "#")
-                        st.markdown(f"- 📎 `[{source.upper()}]` [{claim}]({url})")
+            # Data Source Transparency Badge
+            live_svcs = [
+                s for s in response.required_services
+                if _vault().is_service_authenticated(s) and _vault().get_service_mode(s) == "live"
+            ]
+            demo_svcs = [s for s in response.required_services if s not in live_svcs]
+            if live_svcs:
+                st.success(f"🟢 **Live Data Retrieved From**: {', '.join(s.upper() for s in live_svcs)}")
+            if getattr(response, "skipped_services", None):
+                st.info(f"⚪ **Skipped (Not Authenticated)**: {', '.join(s.upper() for s in response.skipped_services)}")
+            if demo_svcs:
+                st.caption(f"🧪 **Demo Data Used For**: {', '.join(s.upper() for s in demo_svcs)}")
 
-                # Append assistant response
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": response.answer,
-                    "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
-                    "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations]
-                })
+            # Display Contradictions
+            if response.contradictions:
+                st.warning("⚠️ **Contradictions / Stale Data Detected**")
+                for c in response.contradictions:
+                    st.markdown(f"**{c.topic}**: {c.description}")
 
-                # Handle Approval Requirement
-                if response.requires_approval and response.pending_mutation:
-                    st.session_state.pending_approval = response.pending_mutation
-                    st.rerun()
+            # Display Answer
+            st.markdown(response.answer)
+
+            # Display Citations
+            if response.citations:
+                st.markdown("##### 📌 Evidence Citations")
+                for cit in response.citations:
+                    source = cit.get("source_type", "") if isinstance(cit, dict) else getattr(cit, "source_type", "")
+                    claim = cit.get("claim", "") if isinstance(cit, dict) else getattr(cit, "claim", "")
+                    url = cit.get("source_url", "#") if isinstance(cit, dict) else getattr(cit, "source_url", "#")
+                    st.markdown(f"- 📎 `[{source.upper()}]` [{claim}]({url})")
+
+            # Append assistant response
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response.answer,
+                "plan": response.plan.model_dump() if hasattr(response.plan, "model_dump") else response.plan,
+                "citations": [c.model_dump() if hasattr(c, "model_dump") else c for c in response.citations],
+                "react_steps": [s.model_dump() if hasattr(s, "model_dump") else s for s in response.react_steps]
+            })
+
+            # Handle Approval Requirement
+            if response.requires_approval and response.pending_mutation:
+                st.session_state.pending_approval = response.pending_mutation
+                st.rerun()
 
 
 with tab_memory:

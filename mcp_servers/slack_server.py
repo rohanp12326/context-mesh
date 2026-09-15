@@ -16,11 +16,18 @@ class SlackMCPServer:
         return [
             MCPToolDefinition(
                 name="slack.search_messages",
-                description="Search Slack messages, channels, announcements, discussions, and canvases.",
+                description=(
+                    "Search Slack messages, channels, announcements, discussions, and canvases. "
+                    "Supports Slack search operators: use 'from:@user' or 'from:<name>' to find messages sent by a specific user, "
+                    "'to:me' or 'to:<user>' for messages sent to someone, 'in:#channel' for specific channels, or keywords."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Search terms or message query"},
+                        "query": {
+                            "type": "string",
+                            "description": "Search query terms or Slack search syntax (e.g. 'from:@alice', 'in:#general', 'roadmap')"
+                        },
                         "limit": {"type": "integer", "description": "Max number of messages", "default": 10}
                     },
                     "required": ["query"]

@@ -54,6 +54,10 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
+    # Clear pre-existing handlers to prevent duplicated logs across reruns/tests
+    for h in list(root_logger.handlers):
+        root_logger.removeHandler(h)
+
     formatter = RedactingFormatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
 
     # 1. Console Handler (stdout)
