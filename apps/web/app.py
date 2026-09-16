@@ -148,6 +148,8 @@ if "dev_mode" not in st.session_state:
     st.session_state.dev_mode = False
 if "preset_query" not in st.session_state:
     st.session_state.preset_query = None
+if "pending_query" not in st.session_state:
+    st.session_state.pending_query = None
 
 
 def _get_conversation(conv_id: str) -> dict[str, Any] | None:
@@ -175,6 +177,7 @@ def start_new_conversation():
     st.session_state.pending_auth = None
     st.session_state.last_response = None
     st.session_state.preset_query = None
+    st.session_state.pending_query = None
 
 
 def switch_conversation(conv_id: str):
@@ -187,6 +190,7 @@ def switch_conversation(conv_id: str):
     st.session_state.pending_approval = None
     st.session_state.pending_auth = None
     st.session_state.last_response = None
+    st.session_state.pending_query = None
 
 
 def _retitle_active_conversation(first_user_message: str):
@@ -981,14 +985,25 @@ def render_pending_approval():
             st.rerun()
 
 
-# Empty state
-if (
+# Empty state.
+# The welcome panel is rendered on EVERY run and only hidden once a
+# conversation is active. Rendering it conditionally would orphan its elements:
+# Streamlit keeps not-yet-overwritten elements from the previous run visible but
+# dimmed until the current run finishes, so while a long agent call blocks the
+# script the suggestion cards would linger behind the "Thinking…" box.
+_show_welcome = (
     len(st.session_state.messages) == 0
     and not st.session_state.pending_auth
     and not st.session_state.pending_approval
     and not st.session_state.preset_query
-):
+)
+with st.container(key="welcome_panel"):
     render_welcome()
+if not _show_welcome:
+    st.markdown(
+        "<style>.st-key-welcome_panel { display: none; }</style>",
+        unsafe_allow_html=True,
+    )
 
 # Conversation history
 for msg in st.session_state.messages:
@@ -1054,14 +1069,21 @@ if _preset:
 user_input = _preset or (_composer_text if (_sent and _ai_ready) else None)
 
 if user_input:
+    # Queue the question and repaint immediately. The agent runs on the NEXT
+    # script run (below), after the full history — including this question —
+    # has been re-rendered uniformly. This keeps the live "Thinking…" turn from
+    # interleaving with stale, dimmed leftovers of the previous turn while the
+    # (long-running) agent call blocks the script.
     st.session_state.pending_auth = None
     st.session_state.pending_approval = None
 
     _retitle_active_conversation(user_input)
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user", avatar="🧑"):
-        st.markdown(user_input)
+    st.session_state.pending_query = user_input
+    st.rerun()
 
+_pending_query = st.session_state.get("pending_query")
+if _pending_query:
     with st.chat_message("assistant", avatar="✨"):
         status_box = st.status("Thinking…", expanded=True)
         with status_box:
@@ -1093,13 +1115,26 @@ if user_input:
             elif etype == "synthesis":
                 console_box.markdown("🎯 Putting the answer together…")
 
-        response = run_agent_async(
-            query=user_input,
-            thread_id=f"conv_{st.session_state.active_id}",
-            can_mutate=False,
-            allow_auth_gate=True,
-            on_step=handle_ui_step
-        )
+        try:
+            response = run_agent_async(
+                query=_pending_query,
+                thread_id=f"conv_{st.session_state.active_id}",
+                can_mutate=False,
+                allow_auth_gate=True,
+                on_step=handle_ui_step
+            )
+        except Exception as exc:
+            # Clear the queue so later reruns don't keep retrying a failing run.
+            st.session_state.pending_query = None
+            logger.exception("Agent run failed for query: %s", _pending_query)
+            status_box.update(label="Something went wrong", state="error", expanded=False)
+            err_msg = f"⚠️ Sorry — something went wrong while answering that. Please try again. ({exc})"
+            st.error(err_msg)
+            st.session_state.messages.append({
+                "role": "assistant", "content": err_msg,
+                "plan": None, "citations": [], "react_steps": [], "contradictions": [],
+            })
+            st.stop()
 
         rounds_count = len(response.react_steps) if response.react_steps else 1
         status_box.update(
@@ -1109,6 +1144,7 @@ if user_input:
         )
 
         st.session_state.last_response = response
+        st.session_state.pending_query = None
 
         # Authentication gate pauses the conversation
         if response.auth_required:

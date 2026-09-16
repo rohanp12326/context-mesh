@@ -55,6 +55,8 @@ class LLMClient:
         self._explicit_model = model
         # Stable per-session identifier required by the OpenCode gateway for efficient routing
         self._session_id = str(uuid.uuid4())
+        # Maps sanitized OpenAI-safe tool names back to their original (e.g. dotted) names
+        self._tool_name_map: Dict[str, str] = {}
 
     @property
     def provider(self) -> str:
@@ -180,10 +182,11 @@ class LLMClient:
                             parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
                         except Exception:
                             parsed_args = {}
+                        raw_name = fn.get("name", "")
                         tool_calls.append(
                             ToolCallRequest(
                                 id=tc.get("id", f"call_{len(tool_calls)}"),
-                                name=fn.get("name", ""),
+                                name=self._tool_name_map.get(raw_name, raw_name),
                                 arguments=parsed_args
                             )
                         )
@@ -213,23 +216,31 @@ class LLMClient:
         raise RuntimeError(f"LLM API call to {target_model} failed after {max_attempts} attempts: {last_error}")
 
     @staticmethod
-    def _format_tools_openai(tools: List[Any]) -> List[Dict[str, Any]]:
+    def _sanitize_tool_name(name: str) -> str:
+        """Coerce a tool name to the OpenAI-safe charset (alphanumerics, '_', '-')."""
+        return re.sub(r"[^a-zA-Z0-9_-]", "_", name or "")
+
+    def _format_tools_openai(self, tools: List[Any]) -> List[Dict[str, Any]]:
         formatted = []
         for t in tools:
             if hasattr(t, "inputSchema"):
+                safe_name = self._sanitize_tool_name(t.name)
+                self._tool_name_map[safe_name] = t.name
                 formatted.append({
                     "type": "function",
                     "function": {
-                        "name": t.name,
+                        "name": safe_name,
                         "description": t.description,
                         "parameters": t.inputSchema
                     }
                 })
             elif isinstance(t, dict) and "name" in t:
+                safe_name = self._sanitize_tool_name(t["name"])
+                self._tool_name_map[safe_name] = t["name"]
                 formatted.append({
                     "type": "function",
                     "function": {
-                        "name": t["name"],
+                        "name": safe_name,
                         "description": t.get("description", ""),
                         "parameters": t.get("inputSchema") or t.get("parameters", {"type": "object"})
                     }
